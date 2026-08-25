@@ -40,15 +40,14 @@ IMAGE_HEIGHT = 1200
 # flux-anime が非対応/失敗した場合は flux にフォールバックする。
 IMAGE_MODEL_CANDIDATES = ["flux-anime", "flux"]
 IMAGE_RETRIES_PER_MODEL = 2
-# 実写・3D調を完全排除するため、Gemini が作った image_prompt をこの前後で
-# 必ず挟んでから Pollinations に送る（Gemini の出力内容に依存しない強制指定）。
-IMAGE_PROMPT_PREFIX = (
-    "2D flat anime illustration, funny Japanese gag manga style, vibrant pop "
-    "colors, bold clean outlines, cel shaded, comical cartoon scene,"
-)
-IMAGE_PROMPT_NEGATIVE = (
-    "photorealistic, realistic humans, 3d render, creepy realistic face, "
-    "photograph, live action, muted gloomy colors, blurry, text, speech bubbles"
+# Gemini が考案した比喩アイデア（image_prompt）を、この固定スタイルで必ず
+# 描かせる（Gemini の出力内容に依存しない強制指定）。
+ILLUSTRATION_STYLE = (
+    "Conceptual editorial satire illustration, John Holcroft style, retro "
+    "vintage textured screen print, clever visual metaphor, minimalist "
+    "surrealism, muted mid-century color palette, grain texture, bold "
+    "composition, powerful symbolic storytelling, strictly NO text, strictly "
+    "NO words, strictly NO typography"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -83,37 +82,38 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 
 # image_prompt の作り方
 
-image_prompt は「状況の説明」ではなく、ギャグ漫画のワンシーンのように誇張された
-リアクション・状況を切り取ったものでなければなりません。抽象的な描写は禁止です。
-オフィスで人がただ立っている・座っているだけの退屈な構図は厳禁です。必ず
-「巨大な障害物」「コミカルな表情のデフォルメキャラ」「ギャグ漫画のような大げさな
-ポーズや状況」のいずれかを組み込んでください。セリフ・文字・記号は一切使わず、
-絵だけで意味が伝わる無言の1コマにすること（スタイル指定はコード側で自動付与
-されるため、image_prompt にはスタイルキーワードを含めなくてよい）。
+image_prompt は、風刺イラストレーターの John Holcroft（ジョン・ホルクラフト）の
+作品のような「人間と物体を融合させた、強烈で知的なビジュアルメタファー（概念図）」
+でなければなりません。人物の顔のアップや、単なる状況のスナップショットは厳禁です。
+人間を「システムの部品」「規格品」「消耗品」「操り人形」のいずれかとして扱い、
+身体の一部が別の物体そのものに置き換わっている・組み込まれている、一目で概念が
+伝わる合成イメージを1つ考案してください（スタイル指定はコード側で自動付与される
+ため、image_prompt にはスタイルキーワードを含めなくてよい）。
 
-悪い例（抽象的で誇張がなく、何が起きているか一目で伝わらない。禁止）:
-- テキスト:「1on1の時間が本音で話せず早送りに感じる」
-  ✗ 悪い例: 上司と部下が会議室で話している。
-  ✓ 良い例: 会議室のテーブルで、満面の作り笑い仮面を被りながら冷や汗を滝のように流す
-    デフォルメされたアニメ風サラリーマンと、腕組みをしてプレッシャーを放つ上司の対面構図。
+悪い例（単なる状況描写。顔アップ。比喩になっていない。禁止）:
+- テキスト:「手当なき新人教育」
+  ✗ 悪い例: 疲れた顔の先輩社員が後輩に教えている。
+  ✓ 良い例: A businessman in a suit whose head has a wind-up key sticking out of
+    it like a clockwork toy, his own body rendered as a burnt-down matchstick
+    with the flame nearly extinguished.
 - テキスト:「形だけの定時退社」
-  ✗ 悪い例: 社員がオフィスを出ようとしている。
-  ✓ 良い例: オフィスで定時ダッシュするアニメ社員の足に、山積みの書類タスク（巨大な鉄球）が
-    鎖で巻き付いていて引きずられているコミカルなシーン。
-- テキスト:「手当のない新人教育」
-  ✗ 悪い例: 先輩が後輩にパソコンの使い方を教えている。
-  ✓ 良い例: HPゲージがゼロ寸前でスケルトン状態になりながらも、新入社員に手取り足取り
-    パソコンを教えているボロボロの先輩社員。
+  ✗ 悪い例: 社員が急いで退社している。
+  ✓ 良い例: The lower half of an office worker's body is a standardized factory
+    conveyor-belt part, being mechanically ejected out of a factory chute the
+    moment the clock strikes the end of the workday.
+- テキスト:「意味のない1on1」
+  ✗ 悪い例: 上司と部下が向かい合って座っている。
+  ✓ 良い例: A man's head is replaced by an old broken radio emitting only static
+    lines, while a giant hand turns its tuning dial without effect.
 
 image_prompt は曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる
 具体性が必須です。以下の要素を1つの英文にまとめてください。
 
-- Subject: 誰が描かれるか（例: a deformed cute Japanese office worker in a shirt and tie）
-- Exaggerated reaction/pose: 誇張された表情・ポーズ（例: streaming anime-style
-  waterfall tears behind a forced smiling mask, gag-manga exaggerated pose）
-- Giant obstacle/Situation/Metaphor: 具体的な巨大障害物や視覚的比喩オブジェクト
-  （例: dragging a giant heavy iron ball made of paperwork chained to their ankle）
-- Background: 場面設定（例: a Japanese office meeting room, plain desk）
+- Human element: 人体のどの部分が使われるか（例: a businessman's head/body/hands）
+- Object fusion: それが融合・置換される具体的な物体（例: a wind-up clockwork key,
+  a factory conveyor part, a broken radio）
+- Concept meaning: その融合が何を象徴するか（機械的消耗、規格化、使い捨てなど）
+- Composition: 中心に据えた、余白を活かしたミニマルな構図
 """
 
 
@@ -223,13 +223,13 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
 def generate_image(image_prompt: str) -> bytes:
     """Pollinations.ai で風刺画像を生成する。APIキー不要。
 
-    実写・3D調を完全排除するため、Gemini が作った image_prompt の前後を
-    固定のスタイル指定／ネガティブ指定で必ず挟んでから送信する。
+    Gemini が考案したビジュアルメタファーに、固定の John Holcroft 風
+    エディトリアル・スタイル指定を必ず付与してから送信する。
     `flux-anime` が使えない場合は `flux` にフォールバックする。
     画像は必須のため、すべてのモデル・リトライが尽きた場合は例外を送出して
     ワークフローを失敗させる（画像なしの Issue は作成しない）。
     """
-    full_prompt = f"{IMAGE_PROMPT_PREFIX} {image_prompt}, {IMAGE_PROMPT_NEGATIVE}"
+    full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}"
     encoded_prompt = urllib.parse.quote(full_prompt, safe="")
 
     last_error: Exception | None = None
