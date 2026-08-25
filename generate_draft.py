@@ -19,7 +19,7 @@ import requests
 from google import genai
 from google.genai import types
 
-TEXT_MODEL = "gemini-2.5-flash"
+TEXT_MODEL = "gemini-2.0-flash"
 IMAGE_MODEL = "imagen-3.0-generate-002"
 
 JST = timezone(timedelta(hours=9))
