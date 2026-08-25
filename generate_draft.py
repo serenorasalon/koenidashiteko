@@ -7,7 +7,6 @@ Gemini API でペルソナに基づく「本音ぼやきテキスト」と、そ
 コミット＆プッシュし、テキストと画像プレビューを載せた GitHub Issue を作成する。
 """
 
-import io
 import json
 import os
 import random
@@ -22,7 +21,6 @@ from datetime import datetime, timezone, timedelta
 import requests
 from google import genai
 from google.genai import types
-from PIL import Image, ImageDraw, ImageFont
 
 # API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
 # （通常は client.models.list() で取得した現行モデルが優先される）
@@ -42,30 +40,11 @@ IMAGE_HEIGHT = 1200
 IMAGE_MODEL = "flux"
 IMAGE_MAX_RETRIES = 3
 ILLUSTRATION_STYLE = (
-    "Japanese single-panel satirical office webcomic, high contrast flat vector art, "
-    "bold clean outlines, muted tones, surreal corporate life metaphor, silent comic "
-    "style, no speech bubbles, strictly NO text, strictly NO words, strictly NO "
-    "typography, strictly NO dialogue"
+    "Japanese anime manga style, expressive anime characters, vibrant color, "
+    "cel shading, clean dynamic line art, humorous single-panel office comedy, "
+    "satirical situation, exaggerated facial expressions, funny visual metaphor, "
+    "no text, no speech bubbles, no words, masterpiece"
 )
-
-# apt-get install fonts-noto-cjk（Ubuntu/GitHub Actions）で入る標準パスを優先し、
-# 環境によって異なる ipaexfont のパッケージ配置や、ローカル Windows での動作確認用に
-# 使えるフォントもフォールバックとして並べている。
-CAPTION_FONT_CANDIDATES = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf",
-    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
-    "/usr/share/fonts/truetype/ipa-gothic/ipag.ttf",
-    "C:/Windows/Fonts/YuGothB.ttc",
-    "C:/Windows/Fonts/meiryob.ttc",
-    "C:/Windows/Fonts/msgothic.ttc",
-]
-CAPTION_MAX_CHARS = 40
-CAPTION_MAX_CHARS_PER_LINE = 14
-CAPTION_MAX_LINES = 3
 
 JST = timezone(timedelta(hours=9))
 
@@ -99,35 +78,39 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 
 # image_prompt の作り方
 
-image_prompt は「状況の説明」ではなく「感情のメタファー化」でなければなりません。
-まず投稿テキストが伝えている感情（虚無感・ブラックさ・矛盾・あきらめ等）を1つ特定し、
-その感情を誰が見ても意味の分かるシュールな一つの視覚的比喩に変換してください。
-セリフ・文字・記号は一切使わず、絵だけで意味が伝わる無言の1コマ漫画にすること。
+image_prompt は「状況の説明」ではなく、アニメのワンシーンのように誇張された
+リアクション・状況を切り取ったものでなければなりません。抽象的な描写は禁止です。
+「誰が」「どんな誇張された表情・ポーズ・状況になっているか」を具体的に指定して
+ください。セリフ・文字・記号は一切使わず、絵だけで意味が伝わる無言の1コマにすること。
 
-悪い例（状況をそのまま描写しているだけで比喩になっていない。禁止）:
-- テキスト:「コンプライアンスを重視しすぎて上司が一言も指導しなくなった」
-  ✗ 悪い例: 上司が黙って座っている。
-  ✓ 良い例: 上司の口に頑丈な南京錠がかけられている。その隣で部下が笑顔でキーボードを叩いている。
-- テキスト:「1on1（本音で話そう）の時間が早送りに感じる」
-  ✗ 悪い例: オフィスで上司と部下が1on1をしている。
-  ✓ 良い例: オフィスデスクで向き合う2人。上司の頭部が巨大な早送りボタン（⏩）になっている。
-
-他の発想例（そのまま使わず、投稿内容に合わせて考案すること）:
-- 「形だけの定時退社」→ 定時ダッシュする社員の足首に、タスクと書かれた鉄球付きの鎖が繋がれている
-- 「手当のない新人教育」→ 後輩にライフバー（HP）を分け与えて、自分がスケルトンになりかけている先輩社員
+悪い例（抽象的で誇張がなく、何が起きているか一目で伝わらない。禁止）:
+- テキスト:「1on1の時間が本音で話せず早送りに感じる」
+  ✗ 悪い例: 上司と部下が会議室で話している。
+  ✓ 良い例: 会議室のテーブルで、満面の作り笑い仮面を被りながら冷や汗を滝のように流す
+    アニメ風のサラリーマンと、腕組みをしてプレッシャーを放つ上司の対面構図。
+- テキスト:「形だけの定時退社」
+  ✗ 悪い例: 社員がオフィスを出ようとしている。
+  ✓ 良い例: オフィスで定時ダッシュするアニメ社員の足に、山積みの書類タスク（鉄球）が
+    鎖で巻き付いていて引きずられているコミカルなシーン。
+- テキスト:「手当のない新人教育」
+  ✗ 悪い例: 先輩が後輩にパソコンの使い方を教えている。
+  ✓ 良い例: HPゲージがゼロ寸前でスケルトン状態になりながらも、新入社員に手取り足取り
+    パソコンを教えているボロボロの先輩社員。
 
 image_prompt は曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる
-具体性が必須です。以下の5要素を、この順番で1つの英文にまとめてください。
+具体性が必須です。以下の要素を1つの英文にまとめてください。
 
 - Subject: 誰が描かれるか（例: a Japanese office worker in a shirt and tie）
-- Action: その主体が何をしているか（例: typing on a keyboard with a forced smile）
-- Metaphor: 感情を表す視覚的比喩オブジェクト（例: a heavy padlock sealing the boss's mouth）
-- Background: 場面設定（例: a minimal gray office cubicle, plain desk, single window）
+- Exaggerated reaction/pose: 誇張された表情・ポーズ（例: streaming anime-style
+  waterfall tears behind a forced smiling mask）
+- Situation/Metaphor: 具体的な状況や視覚的比喩オブジェクト（例: dragging a heavy
+  iron ball made of paperwork chained to their ankle）
+- Background: 場面設定（例: a Japanese office meeting room, plain desk）
 - Style: 下記スタイルキーワードをそのまま使用
 
 image_prompt の末尾には、次のスタイルキーワードを必ずそのまま含めてください
 （一言一句変えないこと。画像内に文字や単語を一切描画させないための指定です）:
-"Japanese single-panel satirical office webcomic, high contrast flat vector art, bold clean outlines, muted tones, surreal corporate life metaphor, silent comic style, no speech bubbles, strictly NO text, strictly NO words, strictly NO typography, strictly NO dialogue"
+"Japanese anime manga style, expressive anime characters, vibrant color, cel shading, clean dynamic line art, humorous single-panel office comedy, satirical situation, exaggerated facial expressions, funny visual metaphor, no text, no speech bubbles, no words, masterpiece"
 """
 
 
@@ -291,69 +274,6 @@ def generate_image(image_prompt: str, max_retries: int = IMAGE_MAX_RETRIES) -> b
     ) from last_error
 
 
-def _find_caption_font_path() -> str:
-    for path in CAPTION_FONT_CANDIDATES:
-        if os.path.exists(path):
-            return path
-    raise RuntimeError(
-        "日本語フォントが見つかりません。GitHub Actions では "
-        "`apt-get install fonts-noto-cjk` 等でインストールしてください。"
-        f"探索したパス: {CAPTION_FONT_CANDIDATES}"
-    )
-
-
-def _shorten_caption(text: str) -> str:
-    if len(text) <= CAPTION_MAX_CHARS:
-        return text
-    return text[: CAPTION_MAX_CHARS - 1] + "…"
-
-
-def _wrap_japanese(text: str) -> list[str]:
-    chars_per_line = CAPTION_MAX_CHARS_PER_LINE
-    lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
-    return lines[:CAPTION_MAX_LINES]
-
-
-def add_japanese_caption(image_bytes: bytes, caption_text: str) -> bytes:
-    """イラストの下部に半透明ブラックの帯を重ね、白文字で日本語テロップを合成する。"""
-    font_path = _find_caption_font_path()
-    image = Image.open(io.BytesIO(image_bytes)).convert("RGBA")
-    width, height = image.size
-
-    lines = _wrap_japanese(_shorten_caption(caption_text))
-    font_size = max(28, width // 18)
-    font = ImageFont.truetype(font_path, font_size)
-
-    measure_draw = ImageDraw.Draw(image)
-    line_metrics = []
-    for line in lines:
-        left, top, right, bottom = measure_draw.textbbox((0, 0), line, font=font)
-        line_metrics.append((line, right - left, bottom - top))
-
-    line_spacing = int(font_size * 0.4)
-    padding = int(font_size * 0.8)
-    text_block_height = sum(h for _, _, h in line_metrics) + line_spacing * (len(lines) - 1)
-    bar_height = text_block_height + padding * 2
-    bar_top = height - bar_height
-
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    ImageDraw.Draw(overlay).rectangle(
-        [(0, bar_top), (width, height)], fill=(0, 0, 0, 160)
-    )
-    composited = Image.alpha_composite(image, overlay)
-    draw = ImageDraw.Draw(composited)
-
-    y = bar_top + padding
-    for line, line_width, line_height in line_metrics:
-        x = (width - line_width) / 2
-        draw.text((x, y), line, font=font, fill=(255, 255, 255, 255))
-        y += line_height + line_spacing
-
-    output = io.BytesIO()
-    composited.convert("RGB").save(output, format="PNG")
-    return output.getvalue()
-
-
 def save_image(image_bytes: bytes) -> str:
     now = datetime.now(JST)
     filename = f"{now.strftime('%Y%m%d_%H%M')}_{uuid.uuid4().hex[:8]}.png"
@@ -422,8 +342,6 @@ def main() -> None:
     print(f"画像プロンプト: {draft['image_prompt']}")
 
     image_bytes = generate_image(draft["image_prompt"])
-    image_bytes = add_japanese_caption(image_bytes, draft["text"])
-    print("日本語テロップを合成しました。")
     image_path = save_image(image_bytes)
     print(f"画像を保存しました: {image_path}")
     git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
