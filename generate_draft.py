@@ -40,10 +40,10 @@ IMAGE_HEIGHT = 1200
 IMAGE_MODEL = "flux"
 IMAGE_MAX_RETRIES = 3
 ILLUSTRATION_STYLE = (
-    "Japanese satirical single-panel webcomic style, minimalist flat vector art, "
-    "clean bold outlines, muted sophisticated color palette, absurd and humorous "
-    "corporate life metaphor, editorial cartoon, no speech bubbles, no text, "
-    "high contrast"
+    "Japanese single-panel satirical office webcomic, high contrast flat vector art, "
+    "bold clean outlines, muted tones, surreal corporate life metaphor, silent comic "
+    "style, no speech bubbles, strictly NO text, strictly NO words, strictly NO "
+    "typography, strictly NO dialogue"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -78,19 +78,26 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 
 # image_prompt の作り方
 
-image_prompt は、投稿内容を一目で「それな」と分からせる、具体的でシュールな
-ビジュアルメタファーを1つ考えて英語で記述してください。抽象的な説明ではなく、
-何が・どうなっている絵なのかが分かる具体的な情景を書くこと。
+image_prompt は「状況の説明」ではなく「感情のメタファー化」でなければなりません。
+まず投稿テキストが伝えている感情（虚無感・ブラックさ・矛盾・あきらめ等）を1つ特定し、
+その感情を誰が見ても意味の分かるシュールな一つの視覚的比喩に変換してください。
+セリフ・文字・記号は一切使わず、絵だけで意味が伝わる無言の1コマ漫画にすること。
 
-参考にすべきメタファーの発想例（そのまま使わず、投稿内容に合わせて考案すること）:
+悪い例（状況をそのまま描写しているだけで比喩になっていない。禁止）:
+- テキスト:「コンプライアンスを重視しすぎて上司が一言も指導しなくなった」
+  ✗ 悪い例: 上司が黙って座っている。
+  ✓ 良い例: 上司の口に頑丈な南京錠がかけられている。その隣で部下が笑顔でキーボードを叩いている。
+- テキスト:「1on1（本音で話そう）の時間が早送りに感じる」
+  ✗ 悪い例: オフィスで上司と部下が1on1をしている。
+  ✓ 良い例: オフィスデスクで向き合う2人。上司の頭部が巨大な早送りボタン（⏩）になっている。
+
+他の発想例（そのまま使わず、投稿内容に合わせて考案すること）:
 - 「形だけの定時退社」→ 定時ダッシュする社員の足首に、タスクと書かれた鉄球付きの鎖が繋がれている
-- 「意味のない1on1」→ 上司の顔が早送りボタン（⏩）になっている
 - 「手当のない新人教育」→ 後輩にライフバー（HP）を分け与えて、自分がスケルトンになりかけている先輩社員
-- 「過度なコンプライアンス」→ 口に頑丈な南京錠をかけられたまま、笑顔でキーボードを叩く会社員
 
 image_prompt の末尾には、次のスタイルキーワードを必ずそのまま含めてください
 （一言一句変えないこと）:
-"Japanese satirical single-panel webcomic style, minimalist flat vector art, clean bold outlines, muted sophisticated color palette, absurd and humorous corporate life metaphor, editorial cartoon, no speech bubbles, no text, high contrast"
+"Japanese single-panel satirical office webcomic, high contrast flat vector art, bold clean outlines, muted tones, surreal corporate life metaphor, silent comic style, no speech bubbles, strictly NO text, strictly NO words, strictly NO typography, strictly NO dialogue"
 """
 
 
