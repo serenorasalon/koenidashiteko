@@ -37,13 +37,18 @@ TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
 IMAGE_WIDTH = 1200
 IMAGE_HEIGHT = 1200
-IMAGE_MODEL = "flux"
-IMAGE_MAX_RETRIES = 3
-ILLUSTRATION_STYLE = (
-    "Japanese anime manga style, expressive anime characters, vibrant color, "
-    "cel shading, clean dynamic line art, humorous single-panel office comedy, "
-    "satirical situation, exaggerated facial expressions, funny visual metaphor, "
-    "no text, no speech bubbles, no words, masterpiece"
+# flux-anime が非対応/失敗した場合は flux にフォールバックする。
+IMAGE_MODEL_CANDIDATES = ["flux-anime", "flux"]
+IMAGE_RETRIES_PER_MODEL = 2
+# 実写・3D調を完全排除するため、Gemini が作った image_prompt をこの前後で
+# 必ず挟んでから Pollinations に送る（Gemini の出力内容に依存しない強制指定）。
+IMAGE_PROMPT_PREFIX = (
+    "2D flat anime illustration, funny Japanese gag manga style, vibrant pop "
+    "colors, bold clean outlines, cel shaded, comical cartoon scene,"
+)
+IMAGE_PROMPT_NEGATIVE = (
+    "photorealistic, realistic humans, 3d render, creepy realistic face, "
+    "photograph, live action, muted gloomy colors, blurry, text, speech bubbles"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -78,19 +83,22 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 
 # image_prompt の作り方
 
-image_prompt は「状況の説明」ではなく、アニメのワンシーンのように誇張された
+image_prompt は「状況の説明」ではなく、ギャグ漫画のワンシーンのように誇張された
 リアクション・状況を切り取ったものでなければなりません。抽象的な描写は禁止です。
-「誰が」「どんな誇張された表情・ポーズ・状況になっているか」を具体的に指定して
-ください。セリフ・文字・記号は一切使わず、絵だけで意味が伝わる無言の1コマにすること。
+オフィスで人がただ立っている・座っているだけの退屈な構図は厳禁です。必ず
+「巨大な障害物」「コミカルな表情のデフォルメキャラ」「ギャグ漫画のような大げさな
+ポーズや状況」のいずれかを組み込んでください。セリフ・文字・記号は一切使わず、
+絵だけで意味が伝わる無言の1コマにすること（スタイル指定はコード側で自動付与
+されるため、image_prompt にはスタイルキーワードを含めなくてよい）。
 
 悪い例（抽象的で誇張がなく、何が起きているか一目で伝わらない。禁止）:
 - テキスト:「1on1の時間が本音で話せず早送りに感じる」
   ✗ 悪い例: 上司と部下が会議室で話している。
   ✓ 良い例: 会議室のテーブルで、満面の作り笑い仮面を被りながら冷や汗を滝のように流す
-    アニメ風のサラリーマンと、腕組みをしてプレッシャーを放つ上司の対面構図。
+    デフォルメされたアニメ風サラリーマンと、腕組みをしてプレッシャーを放つ上司の対面構図。
 - テキスト:「形だけの定時退社」
   ✗ 悪い例: 社員がオフィスを出ようとしている。
-  ✓ 良い例: オフィスで定時ダッシュするアニメ社員の足に、山積みの書類タスク（鉄球）が
+  ✓ 良い例: オフィスで定時ダッシュするアニメ社員の足に、山積みの書類タスク（巨大な鉄球）が
     鎖で巻き付いていて引きずられているコミカルなシーン。
 - テキスト:「手当のない新人教育」
   ✗ 悪い例: 先輩が後輩にパソコンの使い方を教えている。
@@ -100,17 +108,12 @@ image_prompt は「状況の説明」ではなく、アニメのワンシーン�
 image_prompt は曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる
 具体性が必須です。以下の要素を1つの英文にまとめてください。
 
-- Subject: 誰が描かれるか（例: a Japanese office worker in a shirt and tie）
+- Subject: 誰が描かれるか（例: a deformed cute Japanese office worker in a shirt and tie）
 - Exaggerated reaction/pose: 誇張された表情・ポーズ（例: streaming anime-style
-  waterfall tears behind a forced smiling mask）
-- Situation/Metaphor: 具体的な状況や視覚的比喩オブジェクト（例: dragging a heavy
-  iron ball made of paperwork chained to their ankle）
+  waterfall tears behind a forced smiling mask, gag-manga exaggerated pose）
+- Giant obstacle/Situation/Metaphor: 具体的な巨大障害物や視覚的比喩オブジェクト
+  （例: dragging a giant heavy iron ball made of paperwork chained to their ankle）
 - Background: 場面設定（例: a Japanese office meeting room, plain desk）
-- Style: 下記スタイルキーワードをそのまま使用
-
-image_prompt の末尾には、次のスタイルキーワードを必ずそのまま含めてください
-（一言一句変えないこと。画像内に文字や単語を一切描画させないための指定です）:
-"Japanese anime manga style, expressive anime characters, vibrant color, cel shading, clean dynamic line art, humorous single-panel office comedy, satirical situation, exaggerated facial expressions, funny visual metaphor, no text, no speech bubbles, no words, masterpiece"
 """
 
 
@@ -217,60 +220,67 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
     ) from last_error
 
 
-def generate_image(image_prompt: str, max_retries: int = IMAGE_MAX_RETRIES) -> bytes:
-    """Pollinations.ai (FLUX) で風刺画像を生成する。APIキー不要。
+def generate_image(image_prompt: str) -> bytes:
+    """Pollinations.ai で風刺画像を生成する。APIキー不要。
 
-    画像は必須のため、リトライしても取得できなかった場合は例外を送出して
+    実写・3D調を完全排除するため、Gemini が作った image_prompt の前後を
+    固定のスタイル指定／ネガティブ指定で必ず挟んでから送信する。
+    `flux-anime` が使えない場合は `flux` にフォールバックする。
+    画像は必須のため、すべてのモデル・リトライが尽きた場合は例外を送出して
     ワークフローを失敗させる（画像なしの Issue は作成しない）。
     """
-    full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}"
+    full_prompt = f"{IMAGE_PROMPT_PREFIX} {image_prompt}, {IMAGE_PROMPT_NEGATIVE}"
     encoded_prompt = urllib.parse.quote(full_prompt, safe="")
 
     last_error: Exception | None = None
-    for attempt in range(1, max_retries + 1):
-        seed = random.randint(0, 2**31 - 1)
-        url = (
-            f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
-            f"?width={IMAGE_WIDTH}&height={IMAGE_HEIGHT}&model={IMAGE_MODEL}"
-            f"&nologo=true&seed={seed}"
-        )
-        print(
-            f"[image] Pollinations.ai へリクエストします "
-            f"(試行 {attempt}/{max_retries}, seed={seed})"
-        )
-        try:
-            response = requests.get(url, timeout=60)
-            response.raise_for_status()
-
-            content_type = response.headers.get("Content-Type", "")
-            if not content_type.startswith("image/"):
-                raise RuntimeError(
-                    f"Pollinations.ai が画像以外のレスポンスを返しました "
-                    f"(Content-Type: {content_type!r})"
-                )
-            if not response.content:
-                raise RuntimeError("Pollinations.ai が空のレスポンスを返しました")
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[image] 試行 {attempt}/{max_retries} が失敗しました: "
-                f"{type(exc).__name__}: {exc}",
-                file=sys.stderr,
+    for model in IMAGE_MODEL_CANDIDATES:
+        for attempt in range(1, IMAGE_RETRIES_PER_MODEL + 1):
+            seed = random.randint(0, 2**31 - 1)
+            url = (
+                f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
+                f"?width={IMAGE_WIDTH}&height={IMAGE_HEIGHT}&model={model}"
+                f"&nologo=true&seed={seed}"
             )
-            last_error = exc
-            if attempt < max_retries:
-                wait_seconds = 2**attempt
-                print(f"[image] {wait_seconds}秒待機してリトライします。")
-                time.sleep(wait_seconds)
-            continue
+            print(
+                f"[image] Pollinations.ai へリクエストします "
+                f"(model={model}, 試行 {attempt}/{IMAGE_RETRIES_PER_MODEL}, seed={seed})"
+            )
+            try:
+                response = requests.get(url, timeout=60)
+                response.raise_for_status()
 
-        print(
-            f"[image] 画像を取得しました "
-            f"（{len(response.content)} bytes、試行 {attempt}/{max_retries}）"
-        )
-        return response.content
+                content_type = response.headers.get("Content-Type", "")
+                if not content_type.startswith("image/"):
+                    raise RuntimeError(
+                        f"Pollinations.ai が画像以外のレスポンスを返しました "
+                        f"(Content-Type: {content_type!r})"
+                    )
+                if not response.content:
+                    raise RuntimeError("Pollinations.ai が空のレスポンスを返しました")
+            except Exception as exc:  # noqa: BLE001
+                print(
+                    f"[image] model={model} 試行 {attempt}/{IMAGE_RETRIES_PER_MODEL} "
+                    f"が失敗しました: {type(exc).__name__}: {exc}",
+                    file=sys.stderr,
+                )
+                last_error = exc
+                if attempt < IMAGE_RETRIES_PER_MODEL:
+                    wait_seconds = 2**attempt
+                    print(f"[image] {wait_seconds}秒待機してリトライします。")
+                    time.sleep(wait_seconds)
+                continue
+
+            print(
+                f"[image] 画像を取得しました "
+                f"（model={model}, {len(response.content)} bytes）"
+            )
+            return response.content
+
+        print(f"[image] model={model} をあきらめ、次の候補にフォールバックします。", file=sys.stderr)
 
     raise RuntimeError(
-        f"Pollinations.ai への画像生成リクエストが{max_retries}回とも失敗しました"
+        f"Pollinations.ai への画像生成リクエストがすべてのモデル候補 "
+        f"{IMAGE_MODEL_CANDIDATES} で失敗しました"
     ) from last_error
 
 
