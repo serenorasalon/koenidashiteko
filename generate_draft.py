@@ -47,7 +47,7 @@ ILLUSTRATION_STYLE = (
     "vintage textured screen print, clever visual metaphor, minimalist "
     "surrealism, muted mid-century color palette, grain texture, bold "
     "composition, powerful symbolic storytelling, strictly NO text, strictly "
-    "NO words"
+    "NO words, strictly NO typography"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -89,45 +89,45 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
   "image_prompt": "この投稿を象徴するシュールな風刺イラストを生成するための英語の画像生成プロンプト"
 }
 
-# image_prompt の作り方
+# image_prompt の作り方（テキストとの関連性100%が最優先）
 
-image_prompt は、風刺イラストレーターの John Holcroft（ジョン・ホルクラフト）の
-作品のような「人間と物体を融合させた、強烈で知的なビジュアルメタファー（概念図）」
-でなければなりません。人物の顔のアップや、単なる状況のスナップショットは厳禁です。
-人間を「システムの部品」「規格品」「消耗品」「操り人形」のいずれかとして扱い、
-身体の一部が別の物体そのものに置き換わっている・組み込まれている、一目で概念が
-伝わる合成イメージを1つ考案してください（スタイル指定はコード側で自動付与される
-ため、image_prompt にはスタイルキーワードを含めなくてよい）。
+image_prompt は、投稿テキストの内容と無関係な抽象画になることを絶対に防ぐため、
+必ず次の3ステップで、この順番のとおりに考案してください。
 
-悪い例（単なる状況描写。顔アップ。比喩になっていない。禁止）:
-- テキスト:「手当なき新人教育」
-  ✗ 悪い例: 疲れた顔の先輩社員が後輩に教えている。
-  ✓ 良い例: A businessman in a suit whose head has a wind-up key sticking out of
-    it like a clockwork toy, his own body rendered as a burnt-down matchstick
-    with the flame nearly extinguished.
-- テキスト:「形だけの定時退社」
-  ✗ 悪い例: 社員が急いで退社している。
-  ✓ 良い例: The lower half of an office worker's body is a standardized factory
-    conveyor-belt part, being mechanically ejected out of a factory chute the
-    moment the clock strikes the end of the workday.
-- テキスト:「意味のない1on1」
-  ✗ 悪い例: 上司と部下が向かい合って座っている。
-  ✓ 良い例: A man's head is replaced by an old broken radio emitting only static
-    lines, while a giant hand turns its tuning dial without effect.
-- テキスト:「値上げの通知ばかり届くポストに、給料アップの通知だけが一向に届かない」
-  ✗ 悪い例: 郵便受けに手紙がたくさん入っている。
-  ✓ 良い例: A person's own ribcage is fused with a wallet, both being slowly
-    crushed together in a giant vice, while price tags rain down like snow
-    in the background.
+## ステップ1: キーワードの特定
+生成した text の中から、そのぼやきの「メインの題材」を1つ特定してください
+（例: 台風/大雨、値上げ/財布、猛暑/太陽、スマホ/時間、南京錠、早送りボタン など）。
+このキーワードが image_prompt の主役（中心被写体）になります。
 
-image_prompt は曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる
-具体性が必須です。以下の要素を1つの英文にまとめてください。
+## ステップ2: 直感的な比喩（メタファー）の構築
+ステップ1のキーワードを使い、誰が見てもその text のことだと分かる具体的な
+ビジュアルを1つだけ組み立ててください。人物の顔のアップや、単なる状況の
+スナップショットは厳禁です。人間を「システムの部品」「規格品」「消耗品」
+「操り人形」のいずれかとして扱い、身体の一部が題材キーワードそのものに
+置き換わっている・組み込まれている、一目で意味が伝わる合成イメージにすること。
 
-- Human element: 人体のどの部分が使われるか（例: a businessman's head/body/hands）
-- Object fusion: それが融合・置換される具体的な物体（例: a wind-up clockwork key,
-  a factory conveyor part, a broken radio）
-- Concept meaning: その融合が何を象徴するか（機械的消耗、規格化、使い捨てなど）
-- Composition: 中心に据えた、余白を活かしたミニマルな構図
+（例1）text:「猛暑でも変わらない労働時間」
+  ✗ 悪い例: 暑そうな顔で汗をかいている人。
+  ✓ 良い例: A giant melting alarm clock in the scorching sun, with a tiny
+    suited businessman figure calmly walking on top of it as if nothing
+    is wrong.
+（例2）text:「台風・災害級の大雨でも出社議論」
+  ✗ 悪い例: 傘をさして歩いている人たち。
+  ✓ 良い例: A line of suited salarymen holding umbrellas, calmly queuing to
+    enter a half-submerged train ticket gate in the middle of a violent
+    storm and flood.
+（例3）text:「物価高と上がらない給料」
+  ✗ 悪い例: 財布からお金を出している人。
+  ✓ 良い例: A giant pair of scissors continuously cutting a salary envelope
+    into smaller pieces, while the human hand holding it shrinks smaller
+    and smaller.
+
+## ステップ3: 英語プロンプトの構成
+[ステップ2で組み立てた具体的な中心被写体と状況] を、そのまま1つの英文として
+まとめてください。スタイル指定（John Holcroft風のレトロな風刺画スタイル）は
+コード側で自動的に末尾に直結されるため、image_prompt にはスタイルキーワードを
+含めなくてよい。曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべ
+られる具体性が必須です。
 """
 
 
