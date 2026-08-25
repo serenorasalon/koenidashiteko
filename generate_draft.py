@@ -13,6 +13,7 @@ import random
 import re
 import subprocess
 import sys
+import time
 import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
@@ -34,9 +35,15 @@ STATIC_TEXT_MODEL_FALLBACKS = [
 TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
 POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
+IMAGE_WIDTH = 1200
+IMAGE_HEIGHT = 1200
+IMAGE_MODEL = "flux"
+IMAGE_MAX_RETRIES = 3
 ILLUSTRATION_STYLE = (
-    "minimalist satirical comic, flat line art, humorous tone, "
-    "single-panel Japanese office satire, no text"
+    "Japanese satirical single-panel webcomic style, minimalist flat vector art, "
+    "clean bold outlines, muted sophisticated color palette, absurd and humorous "
+    "corporate life metaphor, editorial cartoon, no speech bubbles, no text, "
+    "high contrast"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -69,10 +76,21 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
   "image_prompt": "この投稿を象徴するシュールな風刺イラストを生成するための英語の画像生成プロンプト"
 }
 
-image_prompt には、シンプルな線画・フラットデザイン・コミカルなタッチの
-1コマ漫画風イラストになるよう、スタイル指定を必ず含めてください
-（例: "single-panel satirical comic, simple flat line art, minimal colors,
-comical and surreal tone, no text in the image"）。
+# image_prompt の作り方
+
+image_prompt は、投稿内容を一目で「それな」と分からせる、具体的でシュールな
+ビジュアルメタファーを1つ考えて英語で記述してください。抽象的な説明ではなく、
+何が・どうなっている絵なのかが分かる具体的な情景を書くこと。
+
+参考にすべきメタファーの発想例（そのまま使わず、投稿内容に合わせて考案すること）:
+- 「形だけの定時退社」→ 定時ダッシュする社員の足首に、タスクと書かれた鉄球付きの鎖が繋がれている
+- 「意味のない1on1」→ 上司の顔が早送りボタン（⏩）になっている
+- 「手当のない新人教育」→ 後輩にライフバー（HP）を分け与えて、自分がスケルトンになりかけている先輩社員
+- 「過度なコンプライアンス」→ 口に頑丈な南京錠をかけられたまま、笑顔でキーボードを叩く会社員
+
+image_prompt の末尾には、次のスタイルキーワードを必ずそのまま含めてください
+（一言一句変えないこと）:
+"Japanese satirical single-panel webcomic style, minimalist flat vector art, clean bold outlines, muted sophisticated color palette, absurd and humorous corporate life metaphor, editorial cartoon, no speech bubbles, no text, high contrast"
 """
 
 
@@ -179,35 +197,61 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
     ) from last_error
 
 
-def generate_image(image_prompt: str) -> bytes:
-    """Pollinations.ai (FLUX/Turbo) で風刺画像を生成する。APIキー不要。
+def generate_image(image_prompt: str, max_retries: int = IMAGE_MAX_RETRIES) -> bytes:
+    """Pollinations.ai (FLUX) で風刺画像を生成する。APIキー不要。
 
-    画像は必須のため、失敗した場合は例外を送出してワークフローを失敗させる
-    （画像なしの Issue は作成しない）。
+    画像は必須のため、リトライしても取得できなかった場合は例外を送出して
+    ワークフローを失敗させる（画像なしの Issue は作成しない）。
     """
     full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}"
     encoded_prompt = urllib.parse.quote(full_prompt, safe="")
-    seed = random.randint(0, 2**31 - 1)
-    url = (
-        f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
-        f"?width=1024&height=1024&nologo=true&seed={seed}"
-    )
 
-    print(f"[image] Pollinations.ai へリクエストします（seed={seed}）")
-    response = requests.get(url, timeout=60)
-    response.raise_for_status()
-
-    content_type = response.headers.get("Content-Type", "")
-    if not content_type.startswith("image/"):
-        raise RuntimeError(
-            f"Pollinations.ai が画像以外のレスポンスを返しました "
-            f"(Content-Type: {content_type!r})"
+    last_error: Exception | None = None
+    for attempt in range(1, max_retries + 1):
+        seed = random.randint(0, 2**31 - 1)
+        url = (
+            f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
+            f"?width={IMAGE_WIDTH}&height={IMAGE_HEIGHT}&model={IMAGE_MODEL}"
+            f"&nologo=true&seed={seed}"
         )
-    if not response.content:
-        raise RuntimeError("Pollinations.ai が空のレスポンスを返しました")
+        print(
+            f"[image] Pollinations.ai へリクエストします "
+            f"(試行 {attempt}/{max_retries}, seed={seed})"
+        )
+        try:
+            response = requests.get(url, timeout=60)
+            response.raise_for_status()
 
-    print(f"[image] 画像を取得しました（{len(response.content)} bytes）")
-    return response.content
+            content_type = response.headers.get("Content-Type", "")
+            if not content_type.startswith("image/"):
+                raise RuntimeError(
+                    f"Pollinations.ai が画像以外のレスポンスを返しました "
+                    f"(Content-Type: {content_type!r})"
+                )
+            if not response.content:
+                raise RuntimeError("Pollinations.ai が空のレスポンスを返しました")
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[image] 試行 {attempt}/{max_retries} が失敗しました: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            last_error = exc
+            if attempt < max_retries:
+                wait_seconds = 2**attempt
+                print(f"[image] {wait_seconds}秒待機してリトライします。")
+                time.sleep(wait_seconds)
+            continue
+
+        print(
+            f"[image] 画像を取得しました "
+            f"（{len(response.content)} bytes、試行 {attempt}/{max_retries}）"
+        )
+        return response.content
+
+    raise RuntimeError(
+        f"Pollinations.ai への画像生成リクエストが{max_retries}回とも失敗しました"
+    ) from last_error
 
 
 def save_image(image_bytes: bytes) -> str:
