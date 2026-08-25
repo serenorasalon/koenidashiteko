@@ -59,15 +59,18 @@ def parse_meta(issue: dict) -> dict:
     return json.loads(match.group(1))
 
 
-def post_to_x(text: str, image_path: str) -> str:
+def post_to_x(text: str, image_path: str | None) -> str:
     api_key = os.environ["X_API_KEY"]
     api_secret = os.environ["X_API_SECRET"]
     access_token = os.environ["X_ACCESS_TOKEN"]
     access_token_secret = os.environ["X_ACCESS_TOKEN_SECRET"]
 
-    auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
-    api_v1 = tweepy.API(auth)
-    media = api_v1.media_upload(filename=image_path)
+    media_ids = None
+    if image_path:
+        auth = tweepy.OAuth1UserHandler(api_key, api_secret, access_token, access_token_secret)
+        api_v1 = tweepy.API(auth)
+        media = api_v1.media_upload(filename=image_path)
+        media_ids = [media.media_id]
 
     client = tweepy.Client(
         consumer_key=api_key,
@@ -75,7 +78,10 @@ def post_to_x(text: str, image_path: str) -> str:
         access_token=access_token,
         access_token_secret=access_token_secret,
     )
-    result = client.create_tweet(text=text, media_ids=[media.media_id])
+    if media_ids:
+        result = client.create_tweet(text=text, media_ids=media_ids)
+    else:
+        result = client.create_tweet(text=text)
     tweet_id = result.data["id"]
     return f"https://x.com/koenidashiteko/status/{tweet_id}"
 
@@ -140,16 +146,19 @@ def process_issue(issue: dict) -> None:
     try:
         meta = parse_meta(issue)
         text = meta["text"]
-        image_path = meta["image_path"]
+        image_path = meta.get("image_path")
 
-        if not os.path.exists(image_path):
+        if image_path and not os.path.exists(image_path):
             raise FileNotFoundError(f"画像が見つかりません: {image_path}")
 
         tweet_url = post_to_x(text, image_path)
         print(f"投稿しました: {tweet_url}")
 
-        new_path = move_image(image_path)
-        git_commit_and_push(f"chore: mark posted {os.path.basename(new_path)}")
+        if image_path:
+            new_path = move_image(image_path)
+            git_commit_and_push(f"chore: mark posted {os.path.basename(new_path)}")
+        else:
+            print("画像なしの投稿のため、画像の移動はスキップします。")
 
         comment_and_close(
             number,
