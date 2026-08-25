@@ -30,10 +30,11 @@ STATIC_TEXT_MODEL_FALLBACKS = [
 STATIC_IMAGE_MODEL_FALLBACKS = [
     "imagen-3.0-generate-002",
     "imagen-3.0-generate-001",
+    "gemini-2.5-flash-image",
 ]
 # テキスト生成モデルの一覧から除外する（generateContent はサポートするが
 # 用途が異なる）モデル名の断片。
-TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa")
+TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
 JST = timezone(timedelta(hours=9))
 
@@ -138,8 +139,15 @@ def build_text_model_candidates(client: genai.Client) -> list[str]:
     return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
 
 
+def _is_image_capable_model_name(name: str) -> bool:
+    """Imagen 系（predict API）と Gemini の画像出力系（generateContent + IMAGE
+    modality、例: gemini-2.5-flash-image）の両方の命名パターンを拾う。"""
+    return "imagen" in name or name.endswith("-image") or "-image-" in name
+
+
 def build_image_model_candidates(client: genai.Client) -> list[str]:
-    discovered = discover_models(client, name_contains="imagen")
+    discovered = discover_models(client)
+    discovered = [name for name in discovered if _is_image_capable_model_name(name)]
     return _dedupe(discovered + STATIC_IMAGE_MODEL_FALLBACKS)
 
 
@@ -180,21 +188,52 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
     ) from last_error
 
 
-def generate_image(client: genai.Client, image_prompt: str) -> bytes:
+def _generate_image_via_imagen(client: genai.Client, model: str, image_prompt: str) -> bytes | None:
+    """Imagen 系モデル（predict API, generate_images）向けの呼び出し。"""
+    result = client.models.generate_images(
+        model=model,
+        prompt=image_prompt,
+        config=types.GenerateImagesConfig(
+            number_of_images=1,
+            aspect_ratio="1:1",
+        ),
+    )
+    if not result.generated_images:
+        return None
+    return result.generated_images[0].image.image_bytes
+
+
+def _generate_image_via_gemini_chat(
+    client: genai.Client, model: str, image_prompt: str
+) -> bytes | None:
+    """Gemini の画像出力系モデル（generateContent + IMAGE modality、
+    例: gemini-2.5-flash-image）向けの呼び出し。"""
+    response = client.models.generate_content(
+        model=model,
+        contents=image_prompt,
+        config=types.GenerateContentConfig(response_modalities=["TEXT", "IMAGE"]),
+    )
+    for candidate in response.candidates or []:
+        parts = candidate.content.parts if candidate.content else []
+        for part in parts or []:
+            if part.inline_data and part.inline_data.data:
+                return part.inline_data.data
+    return None
+
+
+def generate_image(client: genai.Client, image_prompt: str) -> bytes | None:
+    """風刺画像を生成する。すべてのモデル候補で失敗した場合は例外を送出せず
+    None を返す（Issue はテキストのみで作成し、システム全体は継続する）。"""
     candidates = build_image_model_candidates(client)
     print(f"[image] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
 
     for model in candidates:
         try:
-            result = client.models.generate_images(
-                model=model,
-                prompt=image_prompt,
-                config=types.GenerateImagesConfig(
-                    number_of_images=1,
-                    aspect_ratio="1:1",
-                ),
-            )
+            if "imagen" in model:
+                image_bytes = _generate_image_via_imagen(client, model, image_prompt)
+            else:
+                image_bytes = _generate_image_via_gemini_chat(client, model, image_prompt)
         except Exception as exc:  # noqa: BLE001
             print(
                 f"[image] モデル '{model}' の呼び出しに失敗しました: "
@@ -204,17 +243,20 @@ def generate_image(client: genai.Client, image_prompt: str) -> bytes:
             last_error = exc
             continue
 
-        if not result.generated_images:
+        if not image_bytes:
             print(f"[image] モデル '{model}' は画像を返しませんでした。", file=sys.stderr)
             last_error = RuntimeError(f"'{model}' が画像を返しませんでした")
             continue
 
         print(f"[image] モデル '{model}' で画像を生成しました。")
-        return result.generated_images[0].image.image_bytes
+        return image_bytes
 
-    raise RuntimeError(
-        f"すべての画像生成モデル候補 {candidates} で失敗しました"
-    ) from last_error
+    print(
+        f"[image] すべての画像生成モデル候補 {candidates} で失敗しました。"
+        f"画像なしでテキストのみのIssueを作成します: {last_error}",
+        file=sys.stderr,
+    )
+    return None
 
 
 def save_image(image_bytes: bytes) -> str:
@@ -243,19 +285,29 @@ def git_commit_and_push(paths: list[str], message: str) -> None:
     subprocess.run(["git", "push"], check=True)
 
 
-def create_issue(text: str, image_path: str) -> dict:
+def create_issue(text: str, image_path: str | None) -> dict:
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
     branch = os.environ.get("GITHUB_REF_NAME", "main")
 
-    raw_image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{image_path}"
-
     meta = json.dumps({"text": text, "image_path": image_path}, ensure_ascii=False)
+
+    if image_path:
+        raw_image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{image_path}"
+        image_section = f"## 風刺画プレビュー\n\n![draft image]({raw_image_url})\n\n"
+        labels = ["draft"]
+    else:
+        image_section = (
+            "## 風刺画プレビュー\n\n"
+            "_画像生成に失敗したため、今回はテキストのみです。"
+            "承認するとテキストのみで投稿されます。_\n\n"
+        )
+        labels = ["draft", "no-image"]
+
     body = (
         f"## 下書きテキスト\n\n"
         f"> {text}\n\n"
-        f"## 風刺画プレビュー\n\n"
-        f"![draft image]({raw_image_url})\n\n"
+        f"{image_section}"
         f"---\n"
         f"このIssueに `approved` ラベルを付けると自動投稿されます。\n\n"
         f"<!--KOENIDASHITEKO_META\n{meta}\n-->\n"
@@ -270,7 +322,7 @@ def create_issue(text: str, image_path: str) -> dict:
             "Authorization": f"Bearer {token}",
             "Accept": "application/vnd.github+json",
         },
-        json={"title": title, "body": body, "labels": ["draft"]},
+        json={"title": title, "body": body, "labels": labels},
         timeout=30,
     )
     resp.raise_for_status()
@@ -285,10 +337,15 @@ def main() -> None:
     print(f"画像プロンプト: {draft['image_prompt']}")
 
     image_bytes = generate_image(client, draft["image_prompt"])
-    image_path = save_image(image_bytes)
-    print(f"画像を保存しました: {image_path}")
-
-    git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
+    image_path = None
+    if image_bytes:
+        image_path = save_image(image_bytes)
+        print(f"画像を保存しました: {image_path}")
+        git_commit_and_push(
+            [image_path], f"chore: add draft image {os.path.basename(image_path)}"
+        )
+    else:
+        print("画像なしでテキストのみの下書きとして続行します。", file=sys.stderr)
 
     issue = create_issue(draft["text"], image_path)
     print(f"Issue を作成しました: {issue['html_url']}")
