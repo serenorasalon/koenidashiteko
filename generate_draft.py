@@ -43,11 +43,10 @@ IMAGE_RETRIES_PER_MODEL = 2
 # Gemini が考案した比喩アイデア（image_prompt）を、この固定スタイルで必ず
 # 描かせる（Gemini の出力内容に依存しない強制指定）。
 ILLUSTRATION_STYLE = (
-    "Conceptual editorial satire illustration, John Holcroft style, retro "
-    "vintage textured screen print, clever visual metaphor, minimalist "
-    "surrealism, muted mid-century color palette, grain texture, bold "
-    "composition, powerful symbolic storytelling, strictly NO text, strictly "
-    "NO words, strictly NO typography"
+    "Clear conceptual satire illustration in the style of John Holcroft, "
+    "clever and simple visual metaphor, vintage screenprint texture, flat "
+    "mid-century colors, minimal background, wide shot, powerful visual gag, "
+    "strictly NO text, strictly NO words"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -89,45 +88,53 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
   "image_prompt": "この投稿を象徴するシュールな風刺イラストを生成するための英語の画像生成プロンプト"
 }
 
-# image_prompt の作り方（テキストとの関連性100%が最優先）
+# image_prompt の作り方（誰が見ても直感的に意味がわかることが最優先）
 
-image_prompt は、投稿テキストの内容と無関係な抽象画になることを絶対に防ぐため、
-必ず次の3ステップで、この順番のとおりに考案してください。
+image_prompt は、椅子に座っているだけの人物のような抽象的で意味不明な絵に
+絶対にならないよう、必ず次の3ステップで、この順番のとおりに考案してください。
 
 ## ステップ1: キーワードの特定
 生成した text の中から、そのぼやきの「メインの題材」を1つ特定してください
-（例: 台風/大雨、値上げ/財布、猛暑/太陽、スマホ/時間、南京錠、早送りボタン など）。
-このキーワードが image_prompt の主役（中心被写体）になります。
+（例: 台風/大雨、値上げ/財布、猛暑/太陽、スマホ中毒、コンプラ/責任回避 など）。
 
-## ステップ2: 直感的な比喩（メタファー）の構築
-ステップ1のキーワードを使い、誰が見てもその text のことだと分かる具体的な
-ビジュアルを1つだけ組み立ててください。人物の顔のアップや、単なる状況の
-スナップショットは厳禁です。人間を「システムの部品」「規格品」「消耗品」
-「操り人形」のいずれかとして扱い、身体の一部が題材キーワードそのものに
-置き換わっている・組み込まれている、一目で意味が伝わる合成イメージにすること。
+## ステップ2: 必須構造「A × B」の組み立て
+image_prompt は必ず以下の構造にしてください（この構造以外は禁止）:
 
-（例1）text:「猛暑でも変わらない労働時間」
+  [A: 日常の具体的な日用品・道具・現象を巨大化させたもの]
+  ＋
+  [B: それに巻き込まれている小さな会社員・現代人]
+
+を組み合わせた、シンプルで分かりやすい1対1の構図にすること。人物の単体
+ポートレート・顔のアップ・単に椅子に座っているだけの構図は完全に禁止です。
+must be wide shot または medium shot（引きの視点）で、A と B の関係性が
+一目で分かる全体像を見せること。
+
+（例1）text:「コンプラ重視で誰も責任を取らない」
+  ✗ 悪い例: 会議室で人が黙って座っている。
+  ✓ 良い例: A giant office stamp (hanko) toppling over like a line of
+    dominoes, with tiny suited office workers helplessly watching, unable
+    to stop it, wide shot.
+（例2）text:「猛暑でも変わらない労働時間」
   ✗ 悪い例: 暑そうな顔で汗をかいている人。
-  ✓ 良い例: A giant melting alarm clock in the scorching sun, with a tiny
-    suited businessman figure calmly walking on top of it as if nothing
-    is wrong.
-（例2）text:「台風・災害級の大雨でも出社議論」
-  ✗ 悪い例: 傘をさして歩いている人たち。
-  ✓ 良い例: A line of suited salarymen holding umbrellas, calmly queuing to
-    enter a half-submerged train ticket gate in the middle of a violent
-    storm and flood.
+  ✓ 良い例: A giant frying pan sizzling like a fried egg under the blazing
+    sun, with a tiny suited office worker calmly walking across it while
+    carrying a stack of documents, wide shot.
 （例3）text:「物価高と上がらない給料」
   ✗ 悪い例: 財布からお金を出している人。
-  ✓ 良い例: A giant pair of scissors continuously cutting a salary envelope
-    into smaller pieces, while the human hand holding it shrinks smaller
-    and smaller.
+  ✓ 良い例: A giant vacuum cleaner sucking coins directly out of a small
+    person's pocket, wide shot.
+（例4）text:「スマホ中毒で時間が溶ける」
+  ✗ 悪い例: スマホを見ている人。
+  ✓ 良い例: A giant smartphone screen with a fishing hook extending out of
+    it, a tiny person dangling helplessly caught on the hook, wide shot.
 
 ## ステップ3: 英語プロンプトの構成
-[ステップ2で組み立てた具体的な中心被写体と状況] を、そのまま1つの英文として
-まとめてください。スタイル指定（John Holcroft風のレトロな風刺画スタイル）は
-コード側で自動的に末尾に直結されるため、image_prompt にはスタイルキーワードを
-含めなくてよい。曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべ
-られる具体性が必須です。
+[ステップ2で組み立てた A × B の具体的な構図] を、そのまま1つの英文として
+まとめてください。必ず "wide shot" または "medium shot" を含めること。
+スタイル指定（John Holcroft風のレトロな風刺画スタイル）はコード側で自動的に
+末尾に直結されるため、image_prompt にはスタイルキーワードを含めなくてよい。
+曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる具体性が
+必須です。
 """
 
 
