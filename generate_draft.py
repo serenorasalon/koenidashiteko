@@ -19,7 +19,12 @@ import requests
 from google import genai
 from google.genai import types
 
-TEXT_MODEL = "gemini-2.0-flash"
+# 404 NOT_FOUND になったモデルは自動的にスキップし、次の候補を試す。
+TEXT_MODEL_CANDIDATES = [
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-2.0-flash-exp",
+]
 IMAGE_MODEL = "imagen-3.0-generate-002"
 
 JST = timezone(timedelta(hours=9))
@@ -65,36 +70,60 @@ def build_gemini_client() -> genai.Client:
 
 
 def generate_text_and_prompt(client: genai.Client) -> dict:
-    response = client.models.generate_content(
-        model=TEXT_MODEL,
-        contents=PERSONA_PROMPT,
-        config=types.GenerateContentConfig(
-            temperature=1.0,
-            response_mime_type="application/json",
-        ),
-    )
-    raw = response.text.strip()
-    raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
-    data = json.loads(raw)
+    last_error: Exception | None = None
 
-    text = data["text"].strip()
-    image_prompt = data["image_prompt"].strip()
-    if not text or not image_prompt:
-        raise ValueError(f"Gemini から空の値が返されました: {data!r}")
-    return {"text": text, "image_prompt": image_prompt}
+    for model in TEXT_MODEL_CANDIDATES:
+        try:
+            response = client.models.generate_content(
+                model=model,
+                contents=PERSONA_PROMPT,
+                config=types.GenerateContentConfig(
+                    temperature=1.0,
+                    response_mime_type="application/json",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(f"[text] モデル '{model}' の呼び出しに失敗しました: {exc}", file=sys.stderr)
+            last_error = exc
+            continue
+
+        raw = response.text.strip()
+        raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
+        data = json.loads(raw)
+
+        text = data["text"].strip()
+        image_prompt = data["image_prompt"].strip()
+        if not text or not image_prompt:
+            raise ValueError(f"Gemini から空の値が返されました: {data!r}")
+
+        print(f"[text] モデル '{model}' でテキストを生成しました。")
+        return {"text": text, "image_prompt": image_prompt}
+
+    raise RuntimeError(
+        f"すべてのテキスト生成モデル候補 {TEXT_MODEL_CANDIDATES} で失敗しました"
+    ) from last_error
 
 
 def generate_image(client: genai.Client, image_prompt: str) -> bytes:
-    result = client.models.generate_images(
-        model=IMAGE_MODEL,
-        prompt=image_prompt,
-        config=types.GenerateImagesConfig(
-            number_of_images=1,
-            aspect_ratio="1:1",
-        ),
-    )
+    try:
+        result = client.models.generate_images(
+            model=IMAGE_MODEL,
+            prompt=image_prompt,
+            config=types.GenerateImagesConfig(
+                number_of_images=1,
+                aspect_ratio="1:1",
+            ),
+        )
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[image] モデル '{IMAGE_MODEL}' の呼び出しに失敗しました: "
+            f"{type(exc).__name__}: {exc}",
+            file=sys.stderr,
+        )
+        raise
+
     if not result.generated_images:
-        raise RuntimeError("Imagen が画像を返しませんでした")
+        raise RuntimeError(f"Imagen ('{IMAGE_MODEL}') が画像を返しませんでした")
     return result.generated_images[0].image.image_bytes
 
 
