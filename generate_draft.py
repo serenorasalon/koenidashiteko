@@ -19,13 +19,21 @@ import requests
 from google import genai
 from google.genai import types
 
-# 404 NOT_FOUND になったモデルは自動的にスキップし、次の候補を試す。
-TEXT_MODEL_CANDIDATES = [
+# API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
+# （通常は client.models.list() で取得した現行モデルが優先される）
+STATIC_TEXT_MODEL_FALLBACKS = [
+    "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
     "gemini-2.0-flash-exp",
 ]
-IMAGE_MODEL = "imagen-3.0-generate-002"
+STATIC_IMAGE_MODEL_FALLBACKS = [
+    "imagen-3.0-generate-002",
+    "imagen-3.0-generate-001",
+]
+# テキスト生成モデルの一覧から除外する（generateContent はサポートするが
+# 用途が異なる）モデル名の断片。
+TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa")
 
 JST = timezone(timedelta(hours=9))
 
@@ -69,10 +77,78 @@ def build_gemini_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def _short_model_name(full_name: str) -> str:
+    return (full_name or "").rsplit("/", 1)[-1]
+
+
+def _version_sort_key(name: str) -> tuple:
+    """モデル名に含まれる数値から新しい順にソートするためのキー。"""
+    return tuple(float(n) for n in re.findall(r"\d+(?:\.\d+)?", name))
+
+
+def discover_models(
+    client: genai.Client, action: str | None = None, name_contains: str | None = None
+) -> list[str]:
+    """API キー/アカウントで実際に利用可能なモデル名を新しい順に取得する。
+
+    `client.models.list()` の呼び出し自体に失敗した場合（権限不足・
+    ネットワークエラー等）は空リストを返し、呼び出し元は静的フォールバック
+    リストのみで動作を継続する。
+    """
+    names: list[str] = []
+    try:
+        for model in client.models.list():
+            actions = model.supported_actions or []
+            if action and action not in actions:
+                continue
+            short = _short_model_name(model.name)
+            if not short:
+                continue
+            if name_contains and name_contains not in short:
+                continue
+            names.append(short)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[models] モデル一覧の動的取得に失敗しました。静的フォールバックのみ"
+            f"使用します: {exc}",
+            file=sys.stderr,
+        )
+        return []
+    names.sort(key=_version_sort_key, reverse=True)
+    return names
+
+
+def _dedupe(names: list[str]) -> list[str]:
+    seen: set[str] = set()
+    ordered = []
+    for name in names:
+        if name not in seen:
+            seen.add(name)
+            ordered.append(name)
+    return ordered
+
+
+def build_text_model_candidates(client: genai.Client) -> list[str]:
+    discovered = discover_models(client, action="generateContent")
+    discovered = [
+        name
+        for name in discovered
+        if not any(excluded in name for excluded in TEXT_MODEL_EXCLUDE)
+    ]
+    return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
+
+
+def build_image_model_candidates(client: genai.Client) -> list[str]:
+    discovered = discover_models(client, name_contains="imagen")
+    return _dedupe(discovered + STATIC_IMAGE_MODEL_FALLBACKS)
+
+
 def generate_text_and_prompt(client: genai.Client) -> dict:
+    candidates = build_text_model_candidates(client)
+    print(f"[text] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
 
-    for model in TEXT_MODEL_CANDIDATES:
+    for model in candidates:
         try:
             response = client.models.generate_content(
                 model=model,
@@ -100,31 +176,45 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
         return {"text": text, "image_prompt": image_prompt}
 
     raise RuntimeError(
-        f"すべてのテキスト生成モデル候補 {TEXT_MODEL_CANDIDATES} で失敗しました"
+        f"すべてのテキスト生成モデル候補 {candidates} で失敗しました"
     ) from last_error
 
 
 def generate_image(client: genai.Client, image_prompt: str) -> bytes:
-    try:
-        result = client.models.generate_images(
-            model=IMAGE_MODEL,
-            prompt=image_prompt,
-            config=types.GenerateImagesConfig(
-                number_of_images=1,
-                aspect_ratio="1:1",
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"[image] モデル '{IMAGE_MODEL}' の呼び出しに失敗しました: "
-            f"{type(exc).__name__}: {exc}",
-            file=sys.stderr,
-        )
-        raise
+    candidates = build_image_model_candidates(client)
+    print(f"[image] モデル候補（優先順）: {candidates}")
+    last_error: Exception | None = None
 
-    if not result.generated_images:
-        raise RuntimeError(f"Imagen ('{IMAGE_MODEL}') が画像を返しませんでした")
-    return result.generated_images[0].image.image_bytes
+    for model in candidates:
+        try:
+            result = client.models.generate_images(
+                model=model,
+                prompt=image_prompt,
+                config=types.GenerateImagesConfig(
+                    number_of_images=1,
+                    aspect_ratio="1:1",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[image] モデル '{model}' の呼び出しに失敗しました: "
+                f"{type(exc).__name__}: {exc}",
+                file=sys.stderr,
+            )
+            last_error = exc
+            continue
+
+        if not result.generated_images:
+            print(f"[image] モデル '{model}' は画像を返しませんでした。", file=sys.stderr)
+            last_error = RuntimeError(f"'{model}' が画像を返しませんでした")
+            continue
+
+        print(f"[image] モデル '{model}' で画像を生成しました。")
+        return result.generated_images[0].image.image_bytes
+
+    raise RuntimeError(
+        f"すべての画像生成モデル候補 {candidates} で失敗しました"
+    ) from last_error
 
 
 def save_image(image_bytes: bytes) -> str:
