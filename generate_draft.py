@@ -43,10 +43,10 @@ IMAGE_RETRIES_PER_MODEL = 2
 # Gemini が考案した比喩アイデア（image_prompt）を、この固定スタイルで必ず
 # 描かせる（Gemini の出力内容に依存しない強制指定）。
 ILLUSTRATION_STYLE = (
-    "Clear conceptual satire illustration in the style of John Holcroft, "
-    "clever and simple visual metaphor, vintage screenprint texture, flat "
-    "mid-century colors, minimal background, wide shot, powerful visual gag, "
-    "strictly NO text, strictly NO words"
+    "Humorous editorial cartoon illustration, clear story, recognizable "
+    "real-world office objects and machines, rich colors, vintage comic "
+    "book ink style, wide angle view, visible character reactions, funny "
+    "situational irony, strictly NO text, strictly NO words, high detail"
 )
 
 JST = timezone(timedelta(hours=9))
@@ -104,8 +104,11 @@ image_prompt は必ず以下の構造にしてください（この構造以外�
   ＋
   [B: それに巻き込まれている小さな会社員・現代人]
 
-を組み合わせた、シンプルで分かりやすい1対1の構図にすること。人物の単体
+を組み合わせた、シンプルで分かりやすい1対1の構図にすること。小学生が見ても
+一目で「何が起きているか」分かるくらい具体的で分かりやすいこと。人物の単体
 ポートレート・顔のアップ・単に椅子に座っているだけの構図は完全に禁止です。
+人物を黒い影（シルエット）だけで描いたり、丸や三角などの幾何学模様・記号だけで
+表現することも完全に禁止です。実在する物体として認識できる姿で描くこと。
 must be wide shot または medium shot（引きの視点）で、A と B の関係性が
 一目で分かる全体像を見せること。
 
@@ -127,6 +130,12 @@ must be wide shot または medium shot（引きの視点）で、A と B の関
   ✗ 悪い例: スマホを見ている人。
   ✓ 良い例: A giant smartphone screen with a fishing hook extending out of
     it, a tiny person dangling helplessly caught on the hook, wide shot.
+（例5）text:「DXなのにPDF印刷」
+  ✗ 悪い例: パソコンの前に人が座っている。
+  ✓ 良い例: A sleek high-tech tablet device with a waterfall of printed
+    paper endlessly pouring out of its screen, burying the whole office
+    room in paper, a small office worker drowning in the paper flood,
+    wide shot.
 
 ## ステップ3: 英語プロンプトの構成
 [ステップ2で組み立てた A × B の具体的な構図] を、そのまま1つの英文として
