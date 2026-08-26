@@ -70,8 +70,11 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 共感してクスッと笑える、身近でポップな日常あるあるを代弁する投稿を1つ
 作成してください。難しい時事問題や組織論は扱わないこと。
 
-このテキストは、そのまま正方形のテキストカード画像に大きく表示されます。
-一目で読めて視認性が高くなるよう、短くキレのある言葉選びを徹底してください。
+投稿は「tweet_intro（投稿本文＝導入・フック）」と「card_message（画像カードに
+描画する本音の核心・オチ）」の2つに役割分担して作成します。tweet_intro は
+画像を見たくなるような前振り・引きの一言、card_message はその答え・オチとなる
+キラーフレーズです。両方とも同じ1つのテーマ・エピソードから作ること
+（別々の話題にしないこと）。
 
 # 題材（この中から柔軟に、ランダムに1つ選ぶこと。特定のテーマに偏らないこと）
 - バイト・新人あるある: 何でも聞いてねと言われて聞きに行ったら「今忙しいから
@@ -86,26 +89,40 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 - 気象・通勤: 大雨の日に限って靴下に穴が開いている、月曜朝の目覚まし
   アラーム音に対する強い殺意
 
-# 投稿のルール（文字数を最優先すること）
-- 25〜45文字程度の短くポップな一言にすること。
-- フォロワーへの問いかけ・アンケート・「〜ですよね？」のような質問形式は禁止。
-  あくまで独り言・ぼやき・本音の吐露として書くこと。
+# 投稿のルール
 - 説教くささ・小難しさはゼロにすること。ユーモア全開の「心の叫び・愛嬌のある
   ぼやき」にすること。ネガティブすぎず、「それな」「わかりすぎる」と思わず
   クスッと笑えるようにすること。
 - 絵文字やハッシュタグは使わないこと。
 
+## tweet_intro（投稿本文）のルール
+- 15〜35文字程度の短い前振り・導入・共感を誘う引きの一言にすること。
+- 「これ」「あの現象」のように画像の中身を直接明かさず、見たくなるように
+  問いかけ・シチュエーション提示だけで留めること。フォロワーへの
+  アンケート・「〜ですよね？」のような質問形式は禁止。
+
+## card_message（画像カード）のルール
+- 25〜45文字程度の、本音の核心・オチとなる具体的なキラーフレーズにすること。
+- そのまま正方形のテキストカード画像の中央に大きく表示されるため、
+  一目で読めて視認性が高い、完結した一文にすること。
+
 # 参考例
-「『何かあったら聞いてね』を信じて聞きに行ったら『今忙しい』は詐欺。」
-「出勤前の布団、明らかに普段の5倍の引力で私を離してくれない。」
-「給料日の3日後に残高を見る勇気、誰か私にください。」
+tweet_intro:「バイト先で最も警戒すべき質問がこれ。」
+card_message:「『明日休み？』と聞かれた瞬間に起動するシフト代行警戒アラート。」
+
+tweet_intro:「新人の頃、これで何回もフリーズした。」
+card_message:「『何かあったら聞いてね』を信じて聞きに行ったら『今忙しい』は詐欺。」
+
+tweet_intro:「給料日直後の謎現象といえばこれ。」
+card_message:「給料日の3日後に残高を見る勇気、誰か私にください。」
 
 # 出力形式
 以下のキーのみを持つ JSON オブジェクトを1つだけ出力してください。
 説明文やマークダウンのコードフェンスは付けないこと。
 
 {
-  "text": "生成した投稿本文（25〜45文字程度、日本語）"
+  "tweet_intro": "生成した投稿本文（15〜35文字程度、日本語）",
+  "card_message": "生成した画像カード用の核心メッセージ（25〜45文字程度、日本語）"
 }
 """
 
@@ -176,7 +193,8 @@ def build_text_model_candidates(client: genai.Client) -> list[str]:
     return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
 
 
-def generate_text(client: genai.Client) -> str:
+def generate_draft_texts(client: genai.Client) -> dict:
+    """tweet_intro（投稿本文＝導入）と card_message（画像カードの核心）を生成する。"""
     candidates = build_text_model_candidates(client)
     print(f"[text] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
@@ -200,12 +218,13 @@ def generate_text(client: genai.Client) -> str:
         raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
         data = json.loads(raw)
 
-        text = data["text"].strip()
-        if not text:
+        tweet_intro = data["tweet_intro"].strip()
+        card_message = data["card_message"].strip()
+        if not tweet_intro or not card_message:
             raise ValueError(f"Gemini から空の値が返されました: {data!r}")
 
         print(f"[text] モデル '{model}' でテキストを生成しました。")
-        return text
+        return {"tweet_intro": tweet_intro, "card_message": card_message}
 
     raise RuntimeError(
         f"すべてのテキスト生成モデル候補 {candidates} で失敗しました"
@@ -439,17 +458,21 @@ def git_commit_and_push(paths: list[str], message: str) -> None:
     subprocess.run(["git", "push"], check=True)
 
 
-def create_issue(text: str, image_path: str) -> dict:
+def create_issue(tweet_intro: str, card_message: str, image_path: str) -> dict:
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
     branch = os.environ.get("GITHUB_REF_NAME", "main")
 
     raw_image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{image_path}"
-    meta = json.dumps({"text": text, "image_path": image_path}, ensure_ascii=False)
+    # post_approved.py は meta["text"] をそのまま X の投稿本文として使う。
+    # card_message は画像に焼き込み済みのため meta には含めない。
+    meta = json.dumps({"text": tweet_intro, "image_path": image_path}, ensure_ascii=False)
 
     body = (
-        f"## 下書きテキスト\n\n"
-        f"> {text}\n\n"
+        f"## 投稿テキスト（導入・フック）\n\n"
+        f"> {tweet_intro}\n\n"
+        f"## 画像カードメッセージ（本音の核心）\n\n"
+        f"> {card_message}\n\n"
         f"## テキストカードプレビュー\n\n"
         f"![draft image]({raw_image_url})\n\n"
         f"---\n"
@@ -458,7 +481,7 @@ def create_issue(text: str, image_path: str) -> dict:
     )
 
     now_jst = datetime.now(JST)
-    title = f"[下書き] {now_jst.strftime('%Y-%m-%d %H:%M')} JST - {text[:20]}"
+    title = f"[下書き] {now_jst.strftime('%Y-%m-%d %H:%M')} JST - {tweet_intro[:20]}"
 
     resp = requests.post(
         f"https://api.github.com/repos/{repo}/issues",
@@ -476,15 +499,16 @@ def create_issue(text: str, image_path: str) -> dict:
 def main() -> None:
     client = build_gemini_client()
 
-    text = generate_text(client)
-    print(f"生成テキスト: {text}")
+    draft = generate_draft_texts(client)
+    print(f"投稿テキスト（導入）: {draft['tweet_intro']}")
+    print(f"画像カードメッセージ（核心）: {draft['card_message']}")
 
-    image_bytes = build_text_card(text)
+    image_bytes = build_text_card(draft["card_message"])
     image_path = save_image(image_bytes)
     print(f"テキストカードを保存しました: {image_path}")
     git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
 
-    issue = create_issue(text, image_path)
+    issue = create_issue(draft["tweet_intro"], draft["card_message"], image_path)
     print(f"Issue を作成しました: {issue['html_url']}")
 
 
