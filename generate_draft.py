@@ -43,17 +43,18 @@ IMAGE_RETRIES_PER_MODEL = 2
 # Gemini が考案したシチュエーション（image_prompt）を、この固定スタイルで必ず
 # 描かせる（Gemini の出力内容に依存しない強制指定）。
 ILLUSTRATION_STYLE = (
-    "Japanese modern comedy anime style, vibrant pop colors, thick clean "
-    "outlines, cute expressive young anime character, hilarious exaggerated "
-    "reactions, sweat drops, wide eyes, funny daily struggle situation, 2D "
-    "vector animation screencap, strictly NO text, strictly NO speech "
-    "bubbles, strictly NO typography"
+    "Minimalist cute Japanese cartoon character, loose playful doodle ink "
+    "art, thick bold black outlines, simple flat colors, pure clean white "
+    "background, hilarious deadpan expression, surreal funny situation, "
+    "modern internet meme webcomic style, sticker art, vector illustration, "
+    "strictly NO text, strictly NO words, strictly NO typography, strictly "
+    "NO background clutter"
 )
 # Pollinations の画像エンドポイントには独立したネガティブプロンプト欄がない
 # ため、"no " を前置してポジティブなプロンプト文字列の中で機能させる。
 IMAGE_NEGATIVE_KEYWORDS = (
-    "fine art, abstract art, conceptual art, surrealism, photorealistic, "
-    "3d render, gloomy, dark tones, blurry, typography, logo, watermark"
+    "photorealistic, 3d render, detailed background, realistic face, fine "
+    "art, complex shadows, gloom, dark background, blurry, typography, logo"
 )
 
 
@@ -114,55 +115,40 @@ image_prompt は、椅子に座っているだけの人物のような抽象的�
 （例: 電話対応、布団/出勤、残高/財布、シフト、スマホの充電、月曜の目覚まし
 アラーム など）。
 
-## ステップ2: 「アニメの1コマ」としての大げさなシチュエーション組み立て
+## ステップ2: 「白背景＋ゆるいデフォルメキャラ」の極めてシンプルな構図
 「重圧」「責任回避」「孤独」「暗闇」「プレッシャー」のような感情・抽象概念の
-単語を image_prompt に一切書いてはいけません。必ず、アニメの1コマのように
-大げさに誇張されたキャラクターのリアクション・状況として表現してください。
-巨大な球体・謎の光・奇妙な部屋のような、実在しない抽象オブジェクトの生成は
-厳禁です。小学生が見ても一目で「何が起きているか」分かって思わず笑える
-くらい具体的で分かりやすいこと。人物の単体ポートレート・顔のアップだけ・
-単に椅子に座っているだけの構図、人物を黒い影（シルエット）や丸・三角などの
-幾何学模様・記号だけで表現することも完全に禁止です。以下のいずれかを使うこと:
+単語を image_prompt に一切書いてはいけません。必ず次の要素だけで構成される、
+極めてシンプルな構図にしてください（これ以外の複雑な構図は禁止）:
 
-  (a) 誇張された表情・ポーズ（滝のような汗、白目、ガタガタ震える等）
-  (b) 身近な日用品で人物を物理的に覆う・巻きつける・丸呑みにする
-  (c) 小道具を人物の顔や体に装着させる
-  (d) 巨大化した日用品と小さな人物を組み合わせる
+  - 背景: 何もない真っ白な背景（pure white background）のみ。
+    オフィスや部屋などの背景描写は一切禁止。
+  - 主体: ゆるくデフォルメされた、ゆるかわいい系のキャラクターを1〜2体。
+  - 状況: そのキャラクターが、身近な日用品（電話・布団・財布・スマホ等）を
+    使ってシュールでコミカルなポーズ・状況になっている様子。
 
-must be wide shot または medium shot（引きの視点）で、全体像を見せること。
+小学生が見ても一目で「何が起きているか」分かって思わず笑えるくらい具体的で
+分かりやすいこと。複雑な背景・小道具の羅列・写実的な顔は完全に禁止です。
 
-（例1）text:「電話を取るのが怖すぎる」→ 技法(a)
-  ✗ 悪い例: 緊張した顔で電話を見ている人。（"anxiety" 等の抽象語は禁止）
-  ✓ 良い例: A wide-eyed young anime new employee staring in terror at a
-    ringing black office telephone as if it were a ticking bomb, sweat
-    drops flying, medium shot.
-（例2）text:「出勤前の布団の引力」→ 技法(b)
-  ✗ 悪い例: 布団から出られない人。（"heaviness" 等の抽象語は禁止）
-  ✓ 良い例: A young anime character trying to crawl out of a futon in the
-    morning, while a giant cartoon hand made of blanket fabric grows out
-    of the futon and pulls them back in, wide shot.
-（例3）text:「給料日の3日後に残高が初期化される」→ 技法(b)
-  ✗ 悪い例: 財布を見て驚いている人。（"despair" 等の抽象語は禁止）
-  ✓ 良い例: A young anime character opening an empty wallet in shock, as
-    tiny winged banknotes sprout feathers and fly away into the sky out
-    of it, wide shot.
-（例4）text:「メモを取るスピードが追いつかない」→ 技法(a)
-  ✓ 良い例: A young anime new employee frantically scribbling on a
-    notepad with a smoking pen, sweat drops flying everywhere, wide eyes,
-    while a boss keeps talking rapidly, medium shot.
-（例5）text:「スマホの充電10%で始まる退勤時のサバイバル」→ 技法(a)+(d)
-  ✓ 良い例: A young anime character desperately holding up a giant
-    smartphone with a nearly empty battery icon glowing red, sweating
-    and panicking while walking, wide shot.
+（例1）text:「電話を取るのが怖すぎる」
+  ✓ 良い例: A cute funny doodle-style young worker standing on a pure
+    white background, staring nervously at a ringing vintage telephone,
+    sweat drops.
+（例2）text:「出勤前の布団の引力」
+  ✓ 良い例: A lazy cartoon character lying in bed on a pure white
+    background, being sucked into a fluffy futon like quicksand, deadpan
+    face.
+（例3）text:「給料日の3日後に残高が初期化される」
+  ✓ 良い例: A simple funny cartoon character holding an empty wallet,
+    watching a single cute dollar bill with angel wings fly away into
+    the air, pure white background.
 
 ## ステップ3: 英語プロンプトの構成
-[ステップ2で組み立てた具体的な大げさなシチュエーション] を、そのまま1つの
-英文としてまとめてください。必ず "wide shot" または "medium shot" を含め、
-感情・抽象概念を表す単語（pressure, despair, isolation, darkness 等）は
-一切含めないこと。スタイル指定・ネガティブ指定はコード側で自動的に末尾に
-直結されるため、image_prompt にはスタイルキーワードを含めなくてよい。
-曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる具体性が
-必須です。
+[ステップ2で組み立てた白背景＋キャラクター＋日用品の構図] を、そのまま1つの
+英文としてまとめてください。必ず "pure white background" を含め、感情・
+抽象概念を表す単語（pressure, despair, isolation, darkness 等）は一切
+含めないこと。スタイル指定・ネガティブ指定はコード側で自動的に末尾に直結
+されるため、image_prompt にはスタイルキーワードを含めなくてよい。曖昧な
+形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる具体性が必須です。
 """
 
 
