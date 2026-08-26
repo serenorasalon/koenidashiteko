@@ -40,14 +40,26 @@ IMAGE_HEIGHT = 1200
 # flux-anime が非対応/失敗した場合は flux にフォールバックする。
 IMAGE_MODEL_CANDIDATES = ["flux-anime", "flux"]
 IMAGE_RETRIES_PER_MODEL = 2
-# Gemini が考案した比喩アイデア（image_prompt）を、この固定スタイルで必ず
+# Gemini が考案したシチュエーション（image_prompt）を、この固定スタイルで必ず
 # 描かせる（Gemini の出力内容に依存しない強制指定）。
 ILLUSTRATION_STYLE = (
-    "Clear editorial satire vector illustration, vintage retro screenprint, "
-    "clean distinct objects, bright daylight lighting, sharp outlines, flat "
-    "muted colors, funny visual gag, high legibility, strictly NO text, "
-    "strictly NO words, strictly NO 3D rendering"
+    "Japanese modern gag anime style, colorful cel shading, thick clean "
+    "outlines, expressive cartoon character, funny office comedy scene, "
+    "highly exaggerated facial expression, sweat drops, anime visual gag, "
+    "vibrant flat colors, 2D vector animation style, strictly NO text, "
+    "strictly NO words, strictly NO speech bubbles"
 )
+# Pollinations の画像エンドポイントには独立したネガティブプロンプト欄がない
+# ため、"no " を前置してポジティブなプロンプト文字列の中で機能させる。
+IMAGE_NEGATIVE_KEYWORDS = (
+    "fine art, abstract art, conceptual art, surrealism, photorealistic, "
+    "3d render, gloomy, dark tones, blurry, typography, logo, watermark"
+)
+
+
+def _negative_clause() -> str:
+    items = [item.strip() for item in IMAGE_NEGATIVE_KEYWORDS.split(",")]
+    return ", ".join(f"no {item}" for item in items)
 
 JST = timezone(timedelta(hours=9))
 
@@ -97,56 +109,56 @@ image_prompt は、椅子に座っているだけの人物のような抽象的�
 生成した text の中から、そのぼやきの「メインの題材」を1つ特定してください
 （例: 台風/大雨、値上げ/財布、猛暑/太陽、スマホ中毒、コンプラ/責任回避 など）。
 
-## ステップ2: 「物理的な道具の置き換え」の組み立て（抽象概念の単語は禁止）
+## ステップ2: 「アニメの1コマ」としての大げさなシチュエーション組み立て
 「重圧」「責任回避」「孤独」「暗闇」「プレッシャー」のような感情・抽象概念の
-単語を image_prompt に一切書いてはいけません。必ず、その感情を連想させる
-既存の実在する工業製品・日用品を1つ選び、スーツを着た人物と物理的に組み合わせて
-（巻きつける・被せる・降らせる・押し流す等）表現してください。巨大な球体・
-謎の光・奇妙な部屋のような、実在しない抽象オブジェクトの生成は厳禁です。
-小学生が見ても一目で「何が起きているか」分かるくらい具体的で分かりやすいこと。
-人物の単体ポートレート・顔のアップ・単に椅子に座っているだけの構図、人物を
-黒い影（シルエット）や丸・三角などの幾何学模様・記号だけで表現することも
-完全に禁止です。以下のいずれかの技法を使うこと:
+単語を image_prompt に一切書いてはいけません。必ず、アニメの1コマのように
+大げさに誇張されたキャラクターのリアクション・状況として表現してください。
+巨大な球体・謎の光・奇妙な部屋のような、実在しない抽象オブジェクトの生成は
+厳禁です。小学生が見ても一目で「何が起きているか」分かって思わず笑える
+くらい具体的で分かりやすいこと。人物の単体ポートレート・顔のアップだけ・
+単に椅子に座っているだけの構図、人物を黒い影（シルエット）や丸・三角などの
+幾何学模様・記号だけで表現することも完全に禁止です。以下のいずれかを使うこと:
 
-  (a) 身近な日用品で人物を物理的に覆う・巻きつける
-  (b) 小道具を人物の顔や体に装着させる
-  (c) 巨大化した日用品と小さな人物を組み合わせる
+  (a) 誇張された表情・ポーズ（滝のような汗、白目、ガタガタ震える等）
+  (b) 身近な日用品で人物を物理的に覆う・巻きつける・丸呑みにする
+  (c) 小道具を人物の顔や体に装着させる
+  (d) 巨大化した日用品と小さな人物を組み合わせる
 
 must be wide shot または medium shot（引きの視点）で、全体像を見せること。
 
-（例1）text:「コンプラ重視で誰も責任を取らない」→ 技法(a)
-  ✗ 悪い例: 息苦しそうな顔の社員。（"pressure", "suffocating" 等の抽象語は禁止）
-  ✓ 良い例: A modern bright office where several business employees in
-    suits sit at their desks completely wrapped from head to toe in thick
-    clear bubble wrap packaging, wide shot.
-（例2）text:「形式だけの1on1、本音を言えない」→ 技法(b)
-  ✗ 悪い例: 上司と部下が向き合って座っている。（"pretending" 等の抽象語は禁止）
-  ✓ 良い例: Two business people sitting across an office table, both
-    wearing smiling cardboard masks in front of their real faces, medium
-    shot.
-（例3）text:「値上げの通知ばかりで給料は上がらない」→ 技法(c)
-  ✗ 悪い例: 財布からお金を出している人。（"despair" 等の抽象語は禁止）
-  ✓ 良い例: A tiny businessman holding a tiny umbrella underneath a giant
-    rainstorm of falling red price tags, wide shot.
-（例4）text:「猛暑でも変わらない労働時間」→ 技法(c)
+（例1）text:「猛暑でも変わらない出社」→ 技法(a)+(b)
   ✗ 悪い例: 暑そうな顔で汗をかいている人。（"exhaustion" 等の抽象語は禁止）
-  ✓ 良い例: A giant frying pan sizzling like a fried egg under the blazing
-    sun, with a tiny suited office worker calmly walking across it while
-    carrying a stack of documents, wide shot.
-（例5）text:「DXなのにPDF印刷」→ 技法(c)
-  ✗ 悪い例: パソコンの前に人が座っている。
+  ✓ 良い例: A suited anime salaryman character melting like ice cream in
+    front of an office building, streaming waterfall sweat drops, still
+    trying to punch a time card, wide shot.
+（例2）text:「形式だけの1on1、本音を言えない」→ 技法(a)+(c)
+  ✗ 悪い例: 上司と部下が向き合って座っている。（"pretending" 等の抽象語は禁止）
+  ✓ 良い例: In a meeting room, an anime office worker wearing a big forced
+    smiling mask while their arms and legs shake nervously, facing a boss
+    standing with arms crossed staring intensely, medium shot.
+（例3）text:「値上げラッシュ」→ 技法(a)+(b)
+  ✗ 悪い例: 財布からお金を出している人。（"despair" 等の抽象語は禁止）
+  ✓ 良い例: An anime character with rolled-back white eyes, clutching an
+    empty wallet, about to be swallowed whole by a giant plastic shopping
+    bag, wide shot.
+（例4）text:「コンプラ重視で誰も責任を取らない」→ 技法(b)
+  ✓ 良い例: A modern bright office where several anime business employees
+    sit at their desks completely wrapped from head to toe in thick clear
+    bubble wrap packaging, wide shot.
+（例5）text:「DXなのにPDF印刷」→ 技法(d)
   ✓ 良い例: A sleek high-tech tablet device with a waterfall of printed
     paper endlessly pouring out of its screen, burying the whole office
-    room in paper, a small office worker drowning in the paper flood,
-    wide shot.
+    room in paper, a small anime office worker drowning in the paper
+    flood, wide shot.
 
 ## ステップ3: 英語プロンプトの構成
-[ステップ2で組み立てた具体的な物理的構図] を、そのまま1つの英文としてまとめて
-ください。必ず "wide shot" または "medium shot" を含め、感情・抽象概念を表す
-単語（pressure, despair, isolation, darkness 等）は一切含めないこと。スタイル
-指定はコード側で自動的に末尾に直結されるため、image_prompt にはスタイル
-キーワードを含めなくてよい。曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を
-思い浮かべられる具体性が必須です。
+[ステップ2で組み立てた具体的な大げさなシチュエーション] を、そのまま1つの
+英文としてまとめてください。必ず "wide shot" または "medium shot" を含め、
+感情・抽象概念を表す単語（pressure, despair, isolation, darkness 等）は
+一切含めないこと。スタイル指定・ネガティブ指定はコード側で自動的に末尾に
+直結されるため、image_prompt にはスタイルキーワードを含めなくてよい。
+曖昧な形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる具体性が
+必須です。
 """
 
 
@@ -262,7 +274,7 @@ def generate_image(image_prompt: str) -> bytes:
     画像は必須のため、すべてのモデル・リトライが尽きた場合は例外を送出して
     ワークフローを失敗させる（画像なしの Issue は作成しない）。
     """
-    full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}"
+    full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}, {_negative_clause()}"
     encoded_prompt = urllib.parse.quote(full_prompt, safe="")
 
     last_error: Exception | None = None
