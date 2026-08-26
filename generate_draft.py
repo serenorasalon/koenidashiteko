@@ -43,12 +43,12 @@ IMAGE_RETRIES_PER_MODEL = 2
 # Gemini が考案したシチュエーション（image_prompt）を、この固定スタイルで必ず
 # 描かせる（Gemini の出力内容に依存しない強制指定）。
 ILLUSTRATION_STYLE = (
-    "Minimalist cute Japanese cartoon character, loose playful doodle ink "
-    "art, thick bold black outlines, simple flat colors, pure clean white "
-    "background, hilarious deadpan expression, surreal funny situation, "
-    "modern internet meme webcomic style, sticker art, vector illustration, "
-    "strictly NO text, strictly NO words, strictly NO typography, strictly "
-    "NO background clutter"
+    "Japanese monochrome 2d doodle webcomic by UNOKINOKI style, loose black "
+    "ink pen line art on clean pure white background, cute simple human boy "
+    "in black hoodie with funny deadpan face, flat 2D cartoon, minimal "
+    "accent color, hand-drawn comic strip, sticker style, strictly NO 3d "
+    "render, strictly NO plastic texture, strictly NO text, strictly NO "
+    "speech bubbles"
 )
 # Pollinations の画像エンドポイントには独立したネガティブプロンプト欄がない
 # ため、"no " を前置してポジティブなプロンプト文字列の中で機能させる。
@@ -115,32 +115,33 @@ image_prompt は、椅子に座っているだけの人物のような抽象的�
 （例: 電話対応、布団/出勤、残高/財布、シフト、スマホの充電、月曜の目覚まし
 アラーム など）。
 
-## ステップ2: 「白背景＋ゆるいデフォルメキャラ」の極めてシンプルな構図
+## ステップ2: 「白背景＋脱力系の人間キャラ」の極めてシンプルな構図
 「重圧」「責任回避」「孤独」「暗闇」「プレッシャー」のような感情・抽象概念の
-単語を image_prompt に一切書いてはいけません。必ず次の要素だけで構成される、
+単語を image_prompt に一切書いてはいけません。日用品を擬人化する（道具自体に
+顔や手足を生やして動かす）ことも完全に禁止です。必ず次の要素だけで構成される、
 極めてシンプルな構図にしてください（これ以外の複雑な構図は禁止）:
 
   - 背景: 何もない真っ白な背景（pure white background）のみ。
     オフィスや部屋などの背景描写は一切禁止。
-  - 主体: ゆるくデフォルメされた、ゆるかわいい系のキャラクターを1〜2体。
-  - 状況: そのキャラクターが、身近な日用品（電話・布団・財布・スマホ等）を
-    使ってシュールでコミカルなポーズ・状況になっている様子。
+  - 主体: パーカーやスーツを着た、シンプルで脱力感のある「人間」の
+    キャラクターを1〜2体（道具や動物を主役にしないこと）。
+  - 状況: その人間キャラクターが、身近な日用品（電話・布団・財布・
+    スマホ等）と一緒にシュールでコミカルなポーズ・状況になっている様子。
 
 小学生が見ても一目で「何が起きているか」分かって思わず笑えるくらい具体的で
 分かりやすいこと。複雑な背景・小道具の羅列・写実的な顔は完全に禁止です。
 
-（例1）text:「電話を取るのが怖すぎる」
-  ✓ 良い例: A cute funny doodle-style young worker standing on a pure
-    white background, staring nervously at a ringing vintage telephone,
-    sweat drops.
-（例2）text:「出勤前の布団の引力」
-  ✓ 良い例: A lazy cartoon character lying in bed on a pure white
-    background, being sucked into a fluffy futon like quicksand, deadpan
-    face.
-（例3）text:「給料日の3日後に残高が初期化される」
-  ✓ 良い例: A simple funny cartoon character holding an empty wallet,
-    watching a single cute dollar bill with angel wings fly away into
-    the air, pure white background.
+（例1）text:「スマホから離れられない」
+  ✓ 良い例: A simple 2D doodle drawing of a young person in a black
+    hoodie lying on the floor, staring blankly at a smartphone, loose
+    black ink lines on pure white background.
+（例2）text:「布団から出られない」
+  ✓ 良い例: A cute 2D hand-drawn doodle person completely wrapped in a
+    futon blanket like a burrito with a deadpan face, thick black pen
+    lines on white background.
+（例3）text:「給料日の3日後に残高がゼロになる」
+  ✓ 良い例: A funny simple 2D doodle person opening an empty flat wallet
+    with a blank expression, minimal line art on pure white background.
 
 ## ステップ3: 英語プロンプトの構成
 [ステップ2で組み立てた白背景＋キャラクター＋日用品の構図] を、そのまま1つの
