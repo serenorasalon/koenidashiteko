@@ -1,26 +1,25 @@
 """
-声なき多数派 (@koenidashiteko) 下書き＆風刺画自動生成スクリプト。
+声なき多数派 (@koenidashiteko) 下書き＆テキストカード自動生成スクリプト。
 
-Gemini API でペルソナに基づく「本音ぼやきテキスト」と、それを象徴する
-風刺画イラストの生成プロンプトを作成し、Pollinations.ai (FLUX/Turbo) で
-画像を生成する。生成した画像は images/queue/ に保存してリポジトリに
-コミット＆プッシュし、テキストと画像プレビューを載せた GitHub Issue を作成する。
+Gemini API でペルソナに基づく「本音ぼやきテキスト」を生成し、Pillow で
+そのテキストをカード画像として描画する。生成した画像は images/queue/ に
+保存してリポジトリにコミット＆プッシュし、テキストと画像プレビューを
+載せた GitHub Issue を作成する。
 """
 
+import io
 import json
 import os
-import random
 import re
 import subprocess
 import sys
-import time
-import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
 
 import requests
 from google import genai
 from google.genai import types
+from PIL import Image, ImageDraw, ImageFont
 
 # API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
 # （通常は client.models.list() で取得した現行モデルが優先される）
@@ -34,40 +33,40 @@ STATIC_TEXT_MODEL_FALLBACKS = [
 # 用途が異なる）モデル名の断片。
 TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
-POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
-IMAGE_WIDTH = 1200
-IMAGE_HEIGHT = 1200
-# flux-anime が非対応/失敗した場合は flux にフォールバックする。
-IMAGE_MODEL_CANDIDATES = ["flux-anime", "flux"]
-IMAGE_RETRIES_PER_MODEL = 2
-# Gemini が考案したシチュエーション（image_prompt）を、この固定スタイルで必ず
-# 描かせる（Gemini の出力内容に依存しない強制指定）。
-ILLUSTRATION_STYLE = (
-    "Japanese monochrome 2d doodle webcomic by UNOKINOKI style, loose black "
-    "ink pen line art on clean pure white background, cute simple human boy "
-    "in black hoodie with funny deadpan face, flat 2D cartoon, minimal "
-    "accent color, hand-drawn comic strip, sticker style, strictly NO 3d "
-    "render, strictly NO plastic texture, strictly NO text, strictly NO "
-    "speech bubbles"
-)
-# Pollinations の画像エンドポイントには独立したネガティブプロンプト欄がない
-# ため、"no " を前置してポジティブなプロンプト文字列の中で機能させる。
-IMAGE_NEGATIVE_KEYWORDS = (
-    "photorealistic, 3d render, detailed background, realistic face, fine "
-    "art, complex shadows, gloom, dark background, blurry, typography, logo"
-)
-
-
-def _negative_clause() -> str:
-    items = [item.strip() for item in IMAGE_NEGATIVE_KEYWORDS.split(",")]
-    return ", ".join(f"no {item}" for item in items)
-
 JST = timezone(timedelta(hours=9))
+
+# --- テキストカード描画設定 ---
+CARD_WIDTH = 1200
+CARD_HEIGHT = 1200
+CARD_BACKGROUND_COLOR = (248, 249, 250)  # #F8F9FA
+CARD_TEXT_COLOR = (26, 26, 26)  # 濃いグレー/黒
+CARD_ACCOUNT_COLOR = (108, 117, 125)  # #6c757d
+CARD_ACCOUNT_LABEL = "@koenidashiteko"
+CARD_MARGIN = 120
+
+# apt-get install fonts-noto-cjk（Ubuntu/GitHub Actions）で入る標準パスを優先し、
+# 環境によって異なる ipaexfont のパッケージ配置や、ローカル Windows での動作
+# 確認用に使えるフォントもフォールバックとして並べている。
+CJK_FONT_CANDIDATES = [
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf",
+    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
+    "/usr/share/fonts/truetype/ipa-gothic/ipag.ttf",
+    "C:/Windows/Fonts/YuGothB.ttc",
+    "C:/Windows/Fonts/meiryob.ttc",
+    "C:/Windows/Fonts/msgothic.ttc",
+]
 
 PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
 中の人です。新人社員・アルバイト・20代若手が思わず「それな」「わかりすぎる」と
 共感してクスッと笑える、身近でポップな日常あるあるを代弁する投稿を1つ
 作成してください。難しい時事問題や組織論は扱わないこと。
+
+このテキストは、そのまま正方形のテキストカード画像に大きく表示されます。
+一目で読めて視認性が高くなるよう、短くキレのある言葉選びを徹底してください。
 
 # 題材（この中から柔軟に、ランダムに1つ選ぶこと。特定のテーマに偏らないこと）
 - バイト・新人あるある: 何でも聞いてねと言われて聞きに行ったら「今忙しいから
@@ -83,7 +82,7 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
   アラーム音に対する強い殺意
 
 # 投稿のルール（文字数を最優先すること）
-- 25〜50文字程度の短くポップな一言にすること。
+- 25〜45文字程度の短くポップな一言にすること。
 - フォロワーへの問いかけ・アンケート・「〜ですよね？」のような質問形式は禁止。
   あくまで独り言・ぼやき・本音の吐露として書くこと。
 - 説教くささ・小難しさはゼロにすること。ユーモア全開の「心の叫び・愛嬌のある
@@ -92,7 +91,7 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 - 絵文字やハッシュタグは使わないこと。
 
 # 参考例
-「『何かあったら聞いてね』の言葉を信じて聞きに行ったら『今忙しい』は詐欺。」
+「『何かあったら聞いてね』を信じて聞きに行ったら『今忙しい』は詐欺。」
 「出勤前の布団、明らかに普段の5倍の引力で私を離してくれない。」
 「給料日の3日後に残高を見る勇気、誰か私にください。」
 
@@ -101,55 +100,8 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 説明文やマークダウンのコードフェンスは付けないこと。
 
 {
-  "text": "生成した投稿本文（25〜50文字程度、日本語）",
-  "image_prompt": "この投稿を象徴するコミカルなイラストを生成するための英語の画像生成プロンプト"
+  "text": "生成した投稿本文（25〜45文字程度、日本語）"
 }
-
-# image_prompt の作り方（誰が見ても直感的に意味がわかることが最優先）
-
-image_prompt は、椅子に座っているだけの人物のような抽象的で意味不明な絵に
-絶対にならないよう、必ず次の3ステップで、この順番のとおりに考案してください。
-
-## ステップ1: キーワードの特定
-生成した text の中から、そのぼやきの「メインの題材」を1つ特定してください
-（例: 電話対応、布団/出勤、残高/財布、シフト、スマホの充電、月曜の目覚まし
-アラーム など）。
-
-## ステップ2: 「白背景＋脱力系の人間キャラ」の極めてシンプルな構図
-「重圧」「責任回避」「孤独」「暗闇」「プレッシャー」のような感情・抽象概念の
-単語を image_prompt に一切書いてはいけません。日用品を擬人化する（道具自体に
-顔や手足を生やして動かす）ことも完全に禁止です。必ず次の要素だけで構成される、
-極めてシンプルな構図にしてください（これ以外の複雑な構図は禁止）:
-
-  - 背景: 何もない真っ白な背景（pure white background）のみ。
-    オフィスや部屋などの背景描写は一切禁止。
-  - 主体: パーカーやスーツを着た、シンプルで脱力感のある「人間」の
-    キャラクターを1〜2体（道具や動物を主役にしないこと）。
-  - 状況: その人間キャラクターが、身近な日用品（電話・布団・財布・
-    スマホ等）と一緒にシュールでコミカルなポーズ・状況になっている様子。
-
-小学生が見ても一目で「何が起きているか」分かって思わず笑えるくらい具体的で
-分かりやすいこと。複雑な背景・小道具の羅列・写実的な顔は完全に禁止です。
-
-（例1）text:「スマホから離れられない」
-  ✓ 良い例: A simple 2D doodle drawing of a young person in a black
-    hoodie lying on the floor, staring blankly at a smartphone, loose
-    black ink lines on pure white background.
-（例2）text:「布団から出られない」
-  ✓ 良い例: A cute 2D hand-drawn doodle person completely wrapped in a
-    futon blanket like a burrito with a deadpan face, thick black pen
-    lines on white background.
-（例3）text:「給料日の3日後に残高がゼロになる」
-  ✓ 良い例: A funny simple 2D doodle person opening an empty flat wallet
-    with a blank expression, minimal line art on pure white background.
-
-## ステップ3: 英語プロンプトの構成
-[ステップ2で組み立てた白背景＋キャラクター＋日用品の構図] を、そのまま1つの
-英文としてまとめてください。必ず "pure white background" を含め、感情・
-抽象概念を表す単語（pressure, despair, isolation, darkness 等）は一切
-含めないこと。スタイル指定・ネガティブ指定はコード側で自動的に末尾に直結
-されるため、image_prompt にはスタイルキーワードを含めなくてよい。曖昧な
-形容詞だけで済ませず、誰が読んでも同じ絵を思い浮かべられる具体性が必須です。
 """
 
 
@@ -219,7 +171,7 @@ def build_text_model_candidates(client: genai.Client) -> list[str]:
     return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
 
 
-def generate_text_and_prompt(client: genai.Client) -> dict:
+def generate_text(client: genai.Client) -> str:
     candidates = build_text_model_candidates(client)
     print(f"[text] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
@@ -244,80 +196,108 @@ def generate_text_and_prompt(client: genai.Client) -> dict:
         data = json.loads(raw)
 
         text = data["text"].strip()
-        image_prompt = data["image_prompt"].strip()
-        if not text or not image_prompt:
+        if not text:
             raise ValueError(f"Gemini から空の値が返されました: {data!r}")
 
         print(f"[text] モデル '{model}' でテキストを生成しました。")
-        return {"text": text, "image_prompt": image_prompt}
+        return text
 
     raise RuntimeError(
         f"すべてのテキスト生成モデル候補 {candidates} で失敗しました"
     ) from last_error
 
 
-def generate_image(image_prompt: str) -> bytes:
-    """Pollinations.ai で風刺画像を生成する。APIキー不要。
-
-    Gemini が考案したビジュアルメタファーに、固定の John Holcroft 風
-    エディトリアル・スタイル指定を必ず付与してから送信する。
-    `flux-anime` が使えない場合は `flux` にフォールバックする。
-    画像は必須のため、すべてのモデル・リトライが尽きた場合は例外を送出して
-    ワークフローを失敗させる（画像なしの Issue は作成しない）。
-    """
-    full_prompt = f"{image_prompt}, {ILLUSTRATION_STYLE}, {_negative_clause()}"
-    encoded_prompt = urllib.parse.quote(full_prompt, safe="")
-
-    last_error: Exception | None = None
-    for model in IMAGE_MODEL_CANDIDATES:
-        for attempt in range(1, IMAGE_RETRIES_PER_MODEL + 1):
-            seed = random.randint(0, 2**31 - 1)
-            url = (
-                f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
-                f"?width={IMAGE_WIDTH}&height={IMAGE_HEIGHT}&model={model}"
-                f"&nologo=true&seed={seed}"
-            )
-            print(
-                f"[image] Pollinations.ai へリクエストします "
-                f"(model={model}, 試行 {attempt}/{IMAGE_RETRIES_PER_MODEL}, seed={seed})"
-            )
-            try:
-                response = requests.get(url, timeout=60)
-                response.raise_for_status()
-
-                content_type = response.headers.get("Content-Type", "")
-                if not content_type.startswith("image/"):
-                    raise RuntimeError(
-                        f"Pollinations.ai が画像以外のレスポンスを返しました "
-                        f"(Content-Type: {content_type!r})"
-                    )
-                if not response.content:
-                    raise RuntimeError("Pollinations.ai が空のレスポンスを返しました")
-            except Exception as exc:  # noqa: BLE001
-                print(
-                    f"[image] model={model} 試行 {attempt}/{IMAGE_RETRIES_PER_MODEL} "
-                    f"が失敗しました: {type(exc).__name__}: {exc}",
-                    file=sys.stderr,
-                )
-                last_error = exc
-                if attempt < IMAGE_RETRIES_PER_MODEL:
-                    wait_seconds = 2**attempt
-                    print(f"[image] {wait_seconds}秒待機してリトライします。")
-                    time.sleep(wait_seconds)
-                continue
-
-            print(
-                f"[image] 画像を取得しました "
-                f"（model={model}, {len(response.content)} bytes）"
-            )
-            return response.content
-
-        print(f"[image] model={model} をあきらめ、次の候補にフォールバックします。", file=sys.stderr)
-
+def _find_cjk_font_path() -> str:
+    for path in CJK_FONT_CANDIDATES:
+        if os.path.exists(path):
+            return path
     raise RuntimeError(
-        f"Pollinations.ai への画像生成リクエストがすべてのモデル候補 "
-        f"{IMAGE_MODEL_CANDIDATES} で失敗しました"
-    ) from last_error
+        "日本語フォントが見つかりません。GitHub Actions では "
+        "`apt-get install fonts-noto-cjk` 等でインストールしてください。"
+        f"探索したパス: {CJK_FONT_CANDIDATES}"
+    )
+
+
+def _wrap_japanese(text: str, chars_per_line: int) -> list[str]:
+    lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
+    # 句点などが1文字だけで孤立して改行されるのを防ぎ、前の行にくっつける。
+    if len(lines) > 1 and len(lines[-1]) == 1:
+        lines[-2] += lines.pop()
+    return lines
+
+
+def _measure_lines(
+    draw: ImageDraw.ImageDraw, lines: list[str], font: ImageFont.FreeTypeFont
+) -> tuple[list[int], list[int]]:
+    widths, heights = [], []
+    for line in lines:
+        left, top, right, bottom = draw.textbbox((0, 0), line, font=font)
+        widths.append(right - left)
+        heights.append(bottom - top)
+    return widths, heights
+
+
+def build_text_card(text: str) -> bytes:
+    """ぼやきテキストを、キレのある一言テキストカード画像として描画する。"""
+    font_path = _find_cjk_font_path()
+    image = Image.new("RGB", (CARD_WIDTH, CARD_HEIGHT), CARD_BACKGROUND_COLOR)
+    draw = ImageDraw.Draw(image)
+
+    max_block_width = CARD_WIDTH - CARD_MARGIN * 2
+    max_block_height = CARD_HEIGHT - CARD_MARGIN * 2
+
+    # テキストの長さに応じて折り返し幅とフォントサイズを自動調整し、
+    # 余白に収まる最大サイズを採用する。
+    chosen = None
+    for chars_per_line, font_size in (
+        (8, 108),
+        (10, 92),
+        (12, 78),
+        (14, 66),
+        (16, 56),
+        (18, 48),
+    ):
+        font = ImageFont.truetype(font_path, font_size)
+        lines = _wrap_japanese(text, chars_per_line)
+        widths, heights = _measure_lines(draw, lines, font)
+        line_spacing = int(font_size * 0.5)
+        block_width = max(widths) if widths else 0
+        block_height = sum(heights) + line_spacing * (len(lines) - 1)
+        if block_width <= max_block_width and block_height <= max_block_height:
+            chosen = (font, lines, widths, heights, line_spacing, block_height)
+            break
+
+    if chosen is None:
+        # どのサイズでも収まらない極端に長いテキストは、最小サイズで強制描画する。
+        chars_per_line, font_size = 18, 48
+        font = ImageFont.truetype(font_path, font_size)
+        lines = _wrap_japanese(text, chars_per_line)
+        widths, heights = _measure_lines(draw, lines, font)
+        line_spacing = int(font_size * 0.5)
+        block_height = sum(heights) + line_spacing * (len(lines) - 1)
+        chosen = (font, lines, widths, heights, line_spacing, block_height)
+
+    font, lines, widths, heights, line_spacing, block_height = chosen
+
+    y = (CARD_HEIGHT - block_height) / 2
+    for line, line_width, line_height in zip(lines, widths, heights):
+        x = (CARD_WIDTH - line_width) / 2
+        draw.text((x, y), line, font=font, fill=CARD_TEXT_COLOR)
+        y += line_height + line_spacing
+
+    account_font = ImageFont.truetype(font_path, 34)
+    left, top, right, bottom = draw.textbbox((0, 0), CARD_ACCOUNT_LABEL, font=account_font)
+    account_width = right - left
+    draw.text(
+        (CARD_WIDTH - account_width - 60, CARD_HEIGHT - 90),
+        CARD_ACCOUNT_LABEL,
+        font=account_font,
+        fill=CARD_ACCOUNT_COLOR,
+    )
+
+    output = io.BytesIO()
+    image.save(output, format="PNG")
+    return output.getvalue()
 
 
 def save_image(image_bytes: bytes) -> str:
@@ -357,7 +337,7 @@ def create_issue(text: str, image_path: str) -> dict:
     body = (
         f"## 下書きテキスト\n\n"
         f"> {text}\n\n"
-        f"## 風刺画プレビュー\n\n"
+        f"## テキストカードプレビュー\n\n"
         f"![draft image]({raw_image_url})\n\n"
         f"---\n"
         f"このIssueに `approved` ラベルを付けると自動投稿されます。\n\n"
@@ -383,16 +363,15 @@ def create_issue(text: str, image_path: str) -> dict:
 def main() -> None:
     client = build_gemini_client()
 
-    draft = generate_text_and_prompt(client)
-    print(f"生成テキスト: {draft['text']}")
-    print(f"画像プロンプト: {draft['image_prompt']}")
+    text = generate_text(client)
+    print(f"生成テキスト: {text}")
 
-    image_bytes = generate_image(draft["image_prompt"])
+    image_bytes = build_text_card(text)
     image_path = save_image(image_bytes)
-    print(f"画像を保存しました: {image_path}")
+    print(f"テキストカードを保存しました: {image_path}")
     git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
 
-    issue = create_issue(draft["text"], image_path)
+    issue = create_issue(text, image_path)
     print(f"Issue を作成しました: {issue['html_url']}")
 
 
