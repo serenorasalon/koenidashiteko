@@ -19,7 +19,7 @@ from datetime import datetime, timezone, timedelta
 import requests
 from google import genai
 from google.genai import types
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageDraw, ImageFont, ImageFilter
 
 # API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
 # （通常は client.models.list() で取得した現行モデルが優先される）
@@ -35,14 +35,19 @@ TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
 JST = timezone(timedelta(hours=9))
 
-# --- テキストカード描画設定 ---
+# --- テキストカード描画設定（プロデザイン調ダークテーマ） ---
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1200
-CARD_BACKGROUND_COLOR = (248, 249, 250)  # #F8F9FA
-CARD_TEXT_COLOR = (26, 26, 26)  # 濃いグレー/黒
-CARD_ACCOUNT_COLOR = (108, 117, 125)  # #6c757d
-CARD_ACCOUNT_LABEL = "@koenidashiteko"
-CARD_MARGIN = 120
+CARD_BG_TOP = (18, 22, 26)  # #12161A
+CARD_BG_BOTTOM = (30, 35, 42)  # #1E232A
+CARD_PANEL_MARGIN = 56
+CARD_PANEL_RADIUS = 40
+CARD_ACCENT_COLOR = (77, 224, 189)  # 発光ボーダー・バッジに使うアクセントカラー
+CARD_TEXT_COLOR = (255, 255, 255)
+CARD_FOOTER_COLOR = (150, 160, 172)
+CARD_FOOTER_LABEL = "声なき多数派  |  @koenidashiteko"
+CARD_BADGE_LABEL = "VOICE OF SILENT MAJORITY"
+CARD_QUOTE_MARK = "“"
 
 # apt-get install fonts-noto-cjk（Ubuntu/GitHub Actions）で入る標準パスを優先し、
 # 環境によって異なる ipaexfont のパッケージ配置や、ローカル Windows での動作
@@ -222,7 +227,8 @@ def _wrap_japanese(text: str, chars_per_line: int) -> list[str]:
     lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
     # 句点などが1文字だけで孤立して改行されるのを防ぎ、前の行にくっつける。
     if len(lines) > 1 and len(lines[-1]) == 1:
-        lines[-2] += lines.pop()
+        last = lines.pop()
+        lines[-1] += last
     return lines
 
 
@@ -237,30 +243,139 @@ def _measure_lines(
     return widths, heights
 
 
-def build_text_card(text: str) -> bytes:
-    """ぼやきテキストを、キレのある一言テキストカード画像として描画する。"""
-    font_path = _find_cjk_font_path()
-    image = Image.new("RGB", (CARD_WIDTH, CARD_HEIGHT), CARD_BACKGROUND_COLOR)
-    draw = ImageDraw.Draw(image)
+def _make_vertical_gradient(
+    width: int, height: int, color_top: tuple, color_bottom: tuple
+) -> Image.Image:
+    base = Image.new("RGB", (width, height), color_top)
+    overlay = Image.new("RGB", (width, height), color_bottom)
+    mask = Image.new("L", (width, height))
+    mask.putdata([int(255 * (y / height)) for y in range(height) for _ in range(width)])
+    return Image.composite(overlay, base, mask)
 
-    max_block_width = CARD_WIDTH - CARD_MARGIN * 2
-    max_block_height = CARD_HEIGHT - CARD_MARGIN * 2
+
+def _draw_rounded_panel_with_glow(base: Image.Image) -> None:
+    """中央に角丸パネルを描き、外周にアクセントカラーの微かな発光ボーダーを重ねる。"""
+    box = (
+        CARD_PANEL_MARGIN,
+        CARD_PANEL_MARGIN,
+        CARD_WIDTH - CARD_PANEL_MARGIN,
+        CARD_HEIGHT - CARD_PANEL_MARGIN,
+    )
+
+    # 発光レイヤー: パネル外周と同じ角丸ボーダーをぼかして下敷きにする。
+    glow_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    glow_draw = ImageDraw.Draw(glow_layer)
+    glow_draw.rounded_rectangle(
+        box, radius=CARD_PANEL_RADIUS, outline=(*CARD_ACCENT_COLOR, 140), width=6
+    )
+    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(14))
+    base.alpha_composite(glow_layer)
+
+    # パネル本体（背景よりわずかに明るいダークトーン）とシャープな境界線。
+    panel_draw = ImageDraw.Draw(base)
+    panel_fill = tuple(min(255, c + 6) for c in CARD_BG_BOTTOM)
+    panel_draw.rounded_rectangle(
+        box, radius=CARD_PANEL_RADIUS, fill=(*panel_fill, 255)
+    )
+    panel_draw.rounded_rectangle(
+        box, radius=CARD_PANEL_RADIUS, outline=(*CARD_ACCENT_COLOR, 200), width=2
+    )
+
+
+def _draw_giant_quote_mark(base: Image.Image, font_path: str) -> None:
+    """奥行きを出すための、半透明の巨大な引用符を左上寄りに配置する。"""
+    quote_font = ImageFont.truetype(font_path, 620)
+    quote_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
+    quote_draw = ImageDraw.Draw(quote_layer)
+    quote_draw.text(
+        (CARD_PANEL_MARGIN + 20, CARD_PANEL_MARGIN - 60),
+        CARD_QUOTE_MARK,
+        font=quote_font,
+        fill=(255, 255, 255, 28),  # 約11%の不透明度
+    )
+    base.alpha_composite(quote_layer)
+
+
+def _draw_spaced_text(
+    draw: ImageDraw.ImageDraw,
+    center_x: int,
+    y: int,
+    text: str,
+    font: ImageFont.FreeTypeFont,
+    fill,
+    letter_spacing: int = 5,
+) -> None:
+    """英字バッジ用に、文字間を少し空けた読みやすいレタースペーシングで描く。"""
+    widths = [draw.textbbox((0, 0), ch, font=font)[2] for ch in text]
+    total_width = sum(widths) + letter_spacing * (len(text) - 1)
+    x = center_x - total_width / 2
+    for ch, w in zip(text, widths):
+        draw.text((x, y), ch, font=font, fill=fill)
+        x += w + letter_spacing
+
+
+def _draw_badge(base: Image.Image, font_path: str) -> None:
+    draw = ImageDraw.Draw(base)
+    badge_font = ImageFont.truetype(font_path, 24)
+    letter_spacing = 5
+    widths = [draw.textbbox((0, 0), ch, font=badge_font)[2] for ch in CARD_BADGE_LABEL]
+    text_width = sum(widths) + letter_spacing * (len(CARD_BADGE_LABEL) - 1)
+
+    pad_x, pad_y = 28, 16
+    pill_width = text_width + pad_x * 2
+    pill_height = 24 + pad_y * 2
+    pill_left = (CARD_WIDTH - pill_width) / 2
+    pill_top = CARD_PANEL_MARGIN + 56
+    pill_box = (pill_left, pill_top, pill_left + pill_width, pill_top + pill_height)
+
+    draw.rounded_rectangle(pill_box, radius=pill_height / 2, fill=(*CARD_ACCENT_COLOR, 255))
+    _draw_spaced_text(
+        draw,
+        CARD_WIDTH / 2,
+        pill_top + pad_y,
+        CARD_BADGE_LABEL,
+        badge_font,
+        fill=tuple(CARD_BG_TOP),
+        letter_spacing=letter_spacing,
+    )
+    return pill_top + pill_height
+
+
+def build_text_card(text: str) -> bytes:
+    """ぼやきテキストを、プロデザイン調のダークテーマグラフィックカードとして描画する。"""
+    font_path = _find_cjk_font_path()
+
+    background = _make_vertical_gradient(CARD_WIDTH, CARD_HEIGHT, CARD_BG_TOP, CARD_BG_BOTTOM)
+    image = background.convert("RGBA")
+
+    _draw_rounded_panel_with_glow(image)
+    _draw_giant_quote_mark(image, font_path)
+    badge_bottom = _draw_badge(image, font_path)
+
+    draw = ImageDraw.Draw(image)
+    footer_font = ImageFont.truetype(font_path, 30)
+    footer_top = CARD_HEIGHT - CARD_PANEL_MARGIN - 76
+
+    text_area_top = badge_bottom + 40
+    text_area_bottom = footer_top - 40
+    max_block_width = CARD_WIDTH - (CARD_PANEL_MARGIN + 100) * 2
+    max_block_height = text_area_bottom - text_area_top
 
     # テキストの長さに応じて折り返し幅とフォントサイズを自動調整し、
     # 余白に収まる最大サイズを採用する。
     chosen = None
     for chars_per_line, font_size in (
-        (8, 108),
-        (10, 92),
-        (12, 78),
-        (14, 66),
-        (16, 56),
-        (18, 48),
+        (8, 92),
+        (10, 80),
+        (12, 68),
+        (14, 58),
+        (16, 50),
+        (18, 44),
     ):
         font = ImageFont.truetype(font_path, font_size)
         lines = _wrap_japanese(text, chars_per_line)
         widths, heights = _measure_lines(draw, lines, font)
-        line_spacing = int(font_size * 0.5)
+        line_spacing = int(font_size * 0.55)
         block_width = max(widths) if widths else 0
         block_height = sum(heights) + line_spacing * (len(lines) - 1)
         if block_width <= max_block_width and block_height <= max_block_height:
@@ -269,34 +384,32 @@ def build_text_card(text: str) -> bytes:
 
     if chosen is None:
         # どのサイズでも収まらない極端に長いテキストは、最小サイズで強制描画する。
-        chars_per_line, font_size = 18, 48
-        font = ImageFont.truetype(font_path, font_size)
-        lines = _wrap_japanese(text, chars_per_line)
+        font = ImageFont.truetype(font_path, 44)
+        lines = _wrap_japanese(text, 18)
         widths, heights = _measure_lines(draw, lines, font)
-        line_spacing = int(font_size * 0.5)
+        line_spacing = int(44 * 0.55)
         block_height = sum(heights) + line_spacing * (len(lines) - 1)
         chosen = (font, lines, widths, heights, line_spacing, block_height)
 
     font, lines, widths, heights, line_spacing, block_height = chosen
 
-    y = (CARD_HEIGHT - block_height) / 2
+    y = text_area_top + (max_block_height - block_height) / 2
     for line, line_width, line_height in zip(lines, widths, heights):
         x = (CARD_WIDTH - line_width) / 2
         draw.text((x, y), line, font=font, fill=CARD_TEXT_COLOR)
         y += line_height + line_spacing
 
-    account_font = ImageFont.truetype(font_path, 34)
-    left, top, right, bottom = draw.textbbox((0, 0), CARD_ACCOUNT_LABEL, font=account_font)
-    account_width = right - left
+    footer_bbox = draw.textbbox((0, 0), CARD_FOOTER_LABEL, font=footer_font)
+    footer_width = footer_bbox[2] - footer_bbox[0]
     draw.text(
-        (CARD_WIDTH - account_width - 60, CARD_HEIGHT - 90),
-        CARD_ACCOUNT_LABEL,
-        font=account_font,
-        fill=CARD_ACCOUNT_COLOR,
+        ((CARD_WIDTH - footer_width) / 2, footer_top),
+        CARD_FOOTER_LABEL,
+        font=footer_font,
+        fill=CARD_FOOTER_COLOR,
     )
 
     output = io.BytesIO()
-    image.save(output, format="PNG")
+    image.convert("RGB").save(output, format="PNG")
     return output.getvalue()
 
 
