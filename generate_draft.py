@@ -38,6 +38,25 @@ TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
 JST = timezone(timedelta(hours=9))
 
+# 曜日ごとの投稿テーマ（datetime.weekday(): 月=0 ... 日=6）。
+# 日本時間（JST）基準で当日の曜日を判定し、Gemini への生成プロンプトに
+# その日のテーマを明示的に注入することで、投稿内容を曜日ごとに切り替える。
+WEEKDAY_THEMES = {
+    0: "新人社会人・若手社員に関する本音・あるある・理不尽",
+    1: "政治・社会制度・税金・世論に対する庶民の本音・チクリとした風刺",
+    2: "ベテラン社員・管理職・おじさん世代の哀愁や本音・社内政治",
+    3: "世間で話題になっている時事ニュース・トレンド・社会現象に関する本音",
+    4: "新人社員・若手の週末直前の本音・解放感・ギャップ",
+    5: "独身男性のリアルな日常・休日・生態・孤独と自由",
+    6: "独身女性のリアルな休日・本音・日常のモヤモヤ・月曜前の心理",
+}
+
+
+def get_today_theme(now: datetime | None = None) -> str:
+    """JST基準の当日の曜日から、本日投稿すべきテーマを返す。"""
+    now = now or datetime.now(JST)
+    return WEEKDAY_THEMES[now.weekday()]
+
 # --- テキストカード描画設定（日常風景ムード + ポスター風レイアウト） ---
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1200
@@ -138,9 +157,9 @@ CARD_FONT_URLS_BRUSH = [
     "https://raw.githubusercontent.com/google/fonts/main/ofl/reggaeone/ReggaeOne-Regular.ttf",
 ]
 
-PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
-中の人です。「本音を言えない世の中の代弁者」として、新人社員・アルバイト・
-20代若手が0.5秒で「わかる」と刺さる、超短文・インパクト重視の投稿を1つ
+PERSONA_PROMPT_HEADER = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
+中の人です。「本音を言えない世の中の代弁者」として、世の中の様々な立場の
+人が0.5秒で「わかる」と刺さる、超短文・インパクト重視の投稿を1つ
 作成してください。難しい時事問題や組織論、長い状況説明やポエム調は
 完全に禁止です。言葉を極限まで研ぎ澄ませること。
 
@@ -149,21 +168,22 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 作成します。tweet_intro は画像を見たくなるような前振り・引きの一言、
 card_lines はその答え・オチとなるキラーフレーズです。両方とも同じ1つの
 テーマ・エピソードから作ること（別々の話題にしないこと）。
+"""
 
-# 題材（この中から柔軟に、ランダムに1つ選ぶこと。特定のテーマに偏らないこと）
-- バイト・新人あるある: 何でも聞いてねと言われて聞きに行ったら「今忙しいから
-  後にして」と言われる絶望、メモを取るスピードが追いつかない、電話を取る時の
-  異様な緊張感
-- 仕事・シフトあるある: 出勤前の布団の引力が普段の5倍になる、バイト先の
-  まかないや休憩時間だけを楽しみに生きている、「明日休み？」と聞かれた瞬間の
-  シフト代行警戒アラート
-- 日常・お金・スマホ: 給料日の3日後には残高が初期化されている、スマホの
-  充電10%で始まる退勤時のサバイバル、コンビニで新作スイーツを買うだけで
-  予算オーバー
-- 気象・通勤: 大雨の日に限って靴下に穴が開いている、月曜朝の目覚まし
-  アラーム音に対する強い殺意
 
-# 投稿のルール
+def _build_theme_section(theme: str) -> str:
+    """本日のテーマ（曜日別）を明示的に注入するプロンプト断片を作る。"""
+    return (
+        "# 本日のテーマ（最優先で厳守すること。他の曜日向けの話題や、"
+        "このテーマから外れる題材は選ばないこと）\n"
+        f"本日のテーマ: {theme}\n\n"
+        "このテーマに基づき、声に出せないリアルな本音・不条理・共感の瞬間を、"
+        "1行目の振り（日常の状況）と2行目の落とし（強烈な本音・オチ）の"
+        "超短文構成で作成してください。\n"
+    )
+
+
+PERSONA_PROMPT_RULES = """# 投稿のルール
 - 説教くささ・小難しさはゼロにすること。ユーモア全開の「心の叫び・愛嬌のある
   ぼやき」にすること。ネガティブすぎず、「それな」「わかりすぎる」と思わず
   クスッと笑えるようにすること。
@@ -180,21 +200,24 @@ card_lines はその答え・オチとなるキラーフレーズです。両方
 
 ## card_lines（画像カード）のルール
 card_lines は、本音の核心・オチとなるメッセージ全体（合わせて**15〜25文字
-程度**）を、**2〜3行**の配列として構造化したものです。長い説明文は厳禁、
-体言止め中心の言い切りキラーフレーズにすること。機械的な文字数折り返しは
-禁止し、必ず「文節（意味のまとまり）」ごとに改行してください。単語や
-複合語の途中で切ってはいけません。
+程度**）を、**2〜3行**の配列として構造化したものです。1行目は「振り」
+（本日のテーマに沿った日常の状況）、最後の行は「落とし」（強烈な本音・
+オチ）に対応させること。長い説明文は厳禁、体言止め中心の言い切り
+キラーフレーズにすること。機械的な文字数折り返しは禁止し、必ず「文節
+（意味のまとまり）」ごとに改行してください。単語や複合語の途中で切っては
+いけません。
 
 各行は以下のオブジェクトです:
 - text: その行の文字列（文節単位）
-- size: "normal" または "large"（オチ・キラーフレーズの行のみ "large"）
+- size: "normal" または "large"（「落とし」の行のみ "large"）
 - color: "white" または "accent"（強調したい行のみ "accent"）
 
-メッセージの中で最も強調したい「キラーフレーズ・キーワード」を含む行だけを
-1行、size="large" かつ color="accent" にしてください。それ以外の行は
-size="normal", color="white" にすること。
+「落とし」の行（メッセージの中で最も強調したいキラーフレーズ・キーワード
+を含む行）だけを size="large" かつ color="accent" にしてください。それ
+以外の行（「振り」）は size="normal", color="white" にすること。
 
-# 参考例
+# 参考例（文体・フォーマットのみの参考。内容は本日のテーマに関わらない
+例示のため、実際の内容は必ず本日のテーマに沿ったものにすること）
 tweet_intro:「これ以上の心理戦を知らない。」
 card_lines:
   [
@@ -234,6 +257,11 @@ card_lines:
   ]
 }
 """
+
+
+def build_persona_prompt(theme: str) -> str:
+    """曜日別テーマを注入した、その日の生成用プロンプト全文を組み立てる。"""
+    return PERSONA_PROMPT_HEADER + "\n" + _build_theme_section(theme) + "\n" + PERSONA_PROMPT_RULES
 
 
 def build_gemini_client() -> genai.Client:
@@ -318,7 +346,15 @@ def _normalize_card_lines(raw_lines: list) -> list[dict]:
 
 
 def generate_draft_texts(client: genai.Client) -> dict:
-    """tweet_intro（投稿本文＝導入）と card_lines（画像カードの構造化された核心）を生成する。"""
+    """tweet_intro（投稿本文＝導入）と card_lines（画像カードの構造化された核心）を生成する。
+
+    日本時間（JST）基準の当日の曜日から曜日別テーマを決定し、生成プロンプトに
+    明示的に注入することで、投稿内容を曜日ごとに切り替える。
+    """
+    theme = get_today_theme()
+    print(f"[theme] 本日のテーマ: {theme}")
+    prompt = build_persona_prompt(theme)
+
     candidates = build_text_model_candidates(client)
     print(f"[text] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
@@ -327,7 +363,7 @@ def generate_draft_texts(client: genai.Client) -> dict:
         try:
             response = client.models.generate_content(
                 model=model,
-                contents=PERSONA_PROMPT,
+                contents=prompt,
                 config=types.GenerateContentConfig(
                     temperature=1.0,
                     response_mime_type="application/json",
