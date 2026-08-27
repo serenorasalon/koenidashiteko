@@ -39,10 +39,16 @@ JST = timezone(timedelta(hours=9))
 # --- テキストカード描画設定（日常風景ムード + ポスター風レイアウト） ---
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1200
-CARD_TEXT_COLOR = (255, 255, 255)
 CARD_TEXT_MARGIN = 140
 # 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため）。
 CARD_OVERLAY_OPACITY = 130
+# 行ごとのジャンプ率（サイズ差）と配色のメリハリ設定。
+CARD_COLOR_WHITE = (255, 255, 255)
+CARD_COLOR_ACCENT = (255, 230, 0)  # #FFE600 ビビッドなイエロー
+CARD_FONT_SIZE_NORMAL = 60
+CARD_FONT_SIZE_LARGE = 92
+CARD_LINE_SPACING_RATIO = 0.35
+CARD_MIN_SCALE = 0.4  # 収まらない場合に縮小する下限
 
 # 外部の写真API（Unsplash等）には依存せず、Pillow だけで完結する日常の
 # ムードを表現する。ネットワーク不要・APIキー不要で確実に動作させるため。
@@ -94,11 +100,11 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
 共感してクスッと笑える、身近でポップな日常あるあるを代弁する投稿を1つ
 作成してください。難しい時事問題や組織論は扱わないこと。
 
-投稿は「tweet_intro（投稿本文＝導入・フック）」と「card_message（画像カードに
-描画する本音の核心・オチ）」の2つに役割分担して作成します。tweet_intro は
-画像を見たくなるような前振り・引きの一言、card_message はその答え・オチとなる
-キラーフレーズです。両方とも同じ1つのテーマ・エピソードから作ること
-（別々の話題にしないこと）。
+投稿は「tweet_intro（投稿本文＝導入・フック）」と「card_lines（画像カードに
+描画する本音の核心・オチを、複数行に構造化したもの）」の2つに役割分担して
+作成します。tweet_intro は画像を見たくなるような前振り・引きの一言、
+card_lines はその答え・オチとなるキラーフレーズです。両方とも同じ1つの
+テーマ・エピソードから作ること（別々の話題にしないこと）。
 
 # 題材（この中から柔軟に、ランダムに1つ選ぶこと。特定のテーマに偏らないこと）
 - バイト・新人あるある: 何でも聞いてねと言われて聞きに行ったら「今忙しいから
@@ -125,20 +131,40 @@ PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声�
   問いかけ・シチュエーション提示だけで留めること。フォロワーへの
   アンケート・「〜ですよね？」のような質問形式は禁止。
 
-## card_message（画像カード）のルール
-- 25〜45文字程度の、本音の核心・オチとなる具体的なキラーフレーズにすること。
-- そのまま正方形のテキストカード画像の中央に大きく表示されるため、
-  一目で読めて視認性が高い、完結した一文にすること。
+## card_lines（画像カード）のルール
+card_lines は、本音の核心・オチとなるメッセージ全体（合わせて25〜45文字程度）を、
+3〜4行の配列として構造化したものです。機械的な文字数折り返しは禁止し、
+必ず「文節（意味のまとまり）」ごとに改行してください。「マットレス」を
+「マット」「レス」のように、単語や複合語の途中で切ってはいけません。
+各行はおおよそ8〜16文字程度の自然な長さにすること。
+
+各行は以下のオブジェクトです:
+- text: その行の文字列（文節単位）
+- size: "normal" または "large"（大きく見せたい行のみ "large"）
+- color: "white" または "accent"（強調したい行のみ "accent"）
+
+メッセージの中で最も強調したい「キラーフレーズ・キーワード」を含む行だけを
+1〜2行、size="large" かつ color="accent" にしてください。それ以外の行は
+size="normal", color="white" にすること。全行を large/accent にするなど、
+強調しすぎないこと。
 
 # 参考例
 tweet_intro:「バイト先で最も警戒すべき質問がこれ。」
-card_message:「『明日休み？』と聞かれた瞬間に起動するシフト代行警戒アラート。」
+card_lines:
+  [
+    {"text": "『明日休み？』と聞かれた瞬間", "size": "normal", "color": "white"},
+    {"text": "起動する", "size": "normal", "color": "white"},
+    {"text": "シフト代行警戒アラート。", "size": "large", "color": "accent"}
+  ]
 
-tweet_intro:「新人の頃、これで何回もフリーズした。」
-card_message:「『何かあったら聞いてね』を信じて聞きに行ったら『今忙しい』は詐欺。」
-
-tweet_intro:「給料日直後の謎現象といえばこれ。」
-card_message:「給料日の3日後に残高を見る勇気、誰か私にください。」
+tweet_intro:「出勤前に必ず発生する、物理法則を無視した現象。」
+card_lines:
+  [
+    {"text": "出勤前の布団の引力が", "size": "normal", "color": "white"},
+    {"text": "普段の5倍になり、", "size": "large", "color": "accent"},
+    {"text": "体がマットレスと一体化する", "size": "normal", "color": "white"},
+    {"text": "絶望感。", "size": "large", "color": "accent"}
+  ]
 
 # 出力形式
 以下のキーのみを持つ JSON オブジェクトを1つだけ出力してください。
@@ -146,7 +172,9 @@ card_message:「給料日の3日後に残高を見る勇気、誰か私にくだ
 
 {
   "tweet_intro": "生成した投稿本文（15〜35文字程度、日本語）",
-  "card_message": "生成した画像カード用の核心メッセージ（25〜45文字程度、日本語）"
+  "card_lines": [
+    {"text": "文節1", "size": "normal|large", "color": "white|accent"}
+  ]
 }
 """
 
@@ -217,8 +245,22 @@ def build_text_model_candidates(client: genai.Client) -> list[str]:
     return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
 
 
+def _normalize_card_lines(raw_lines: list) -> list[dict]:
+    normalized = []
+    for item in raw_lines:
+        text = str(item.get("text", "")).strip()
+        if not text:
+            continue
+        size = item.get("size") if item.get("size") in ("normal", "large") else "normal"
+        color = item.get("color") if item.get("color") in ("white", "accent") else "white"
+        normalized.append({"text": text, "size": size, "color": color})
+    if not normalized:
+        raise ValueError("card_lines が空、または有効な行がありませんでした")
+    return normalized
+
+
 def generate_draft_texts(client: genai.Client) -> dict:
-    """tweet_intro（投稿本文＝導入）と card_message（画像カードの核心）を生成する。"""
+    """tweet_intro（投稿本文＝導入）と card_lines（画像カードの構造化された核心）を生成する。"""
     candidates = build_text_model_candidates(client)
     print(f"[text] モデル候補（優先順）: {candidates}")
     last_error: Exception | None = None
@@ -243,12 +285,12 @@ def generate_draft_texts(client: genai.Client) -> dict:
         data = json.loads(raw)
 
         tweet_intro = data["tweet_intro"].strip()
-        card_message = data["card_message"].strip()
-        if not tweet_intro or not card_message:
+        card_lines = _normalize_card_lines(data["card_lines"])
+        if not tweet_intro:
             raise ValueError(f"Gemini から空の値が返されました: {data!r}")
 
         print(f"[text] モデル '{model}' でテキストを生成しました。")
-        return {"tweet_intro": tweet_intro, "card_message": card_message}
+        return {"tweet_intro": tweet_intro, "card_lines": card_lines}
 
     raise RuntimeError(
         f"すべてのテキスト生成モデル候補 {candidates} で失敗しました"
@@ -264,26 +306,6 @@ def _find_cjk_font_path() -> str:
         "`apt-get install fonts-noto-cjk` 等でインストールしてください。"
         f"探索したパス: {CJK_FONT_CANDIDATES}"
     )
-
-
-def _wrap_japanese(text: str, chars_per_line: int) -> list[str]:
-    lines = [text[i : i + chars_per_line] for i in range(0, len(text), chars_per_line)]
-    # 句点などが1文字だけで孤立して改行されるのを防ぎ、前の行にくっつける。
-    if len(lines) > 1 and len(lines[-1]) == 1:
-        last = lines.pop()
-        lines[-1] += last
-    return lines
-
-
-def _measure_lines(
-    draw: ImageDraw.ImageDraw, lines: list[str], font: ImageFont.FreeTypeFont
-) -> tuple[list[int], list[int]]:
-    widths, heights = [], []
-    for line in lines:
-        left, top, right, bottom = draw.textbbox((0, 0), line, font=font)
-        widths.append(right - left)
-        heights.append(bottom - top)
-    return widths, heights
 
 
 def _make_vertical_gradient(
@@ -397,8 +419,39 @@ def _make_scenic_background(width: int, height: int) -> Image.Image:
     return image
 
 
-def build_text_card(text: str) -> bytes:
-    """card_message を、日常風景ムードの背景に載せたポスター風カードとして描画する。"""
+def _resolve_line_style(line: dict) -> tuple[int, tuple]:
+    font_size = CARD_FONT_SIZE_LARGE if line["size"] == "large" else CARD_FONT_SIZE_NORMAL
+    color = CARD_COLOR_ACCENT if line["color"] == "accent" else CARD_COLOR_WHITE
+    return font_size, color
+
+
+def _layout_card_lines(
+    draw: ImageDraw.ImageDraw, font_path: str, card_lines: list[dict], scale: float
+) -> tuple[list[tuple], int, int]:
+    """指定スケールで各行を計測し、(描画情報リスト, 最大幅, 合計高さ) を返す。"""
+    rendered = []
+    for line in card_lines:
+        base_size, color = _resolve_line_style(line)
+        font_size = max(16, int(base_size * scale))
+        font = ImageFont.truetype(font_path, font_size)
+        left, top, right, bottom = draw.textbbox((0, 0), line["text"], font=font)
+        width, height = right - left, bottom - top
+        rendered.append((line["text"], font, color, width, height))
+
+    max_width = max((r[3] for r in rendered), default=0)
+    max_line_height = max((r[4] for r in rendered), default=0)
+    line_spacing = int(max_line_height * CARD_LINE_SPACING_RATIO)
+    total_height = sum(r[4] for r in rendered) + line_spacing * (len(rendered) - 1)
+    return rendered, max_width, total_height, line_spacing
+
+
+def build_text_card(card_lines: list[dict]) -> bytes:
+    """card_lines を、日常風景ムードの背景に載せたポスター風カードとして描画する。
+
+    Gemini が意味のまとまり（文節）ごとに改行・強調指定した行をそのまま使い、
+    ここでは単語途中の再折り返しは行わない。行が余白に収まらない場合のみ、
+    行の区切りを保ったまま全体を比例縮小する安全策を取る。
+    """
     font_path = _find_cjk_font_path()
 
     image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
@@ -412,42 +465,21 @@ def build_text_card(text: str) -> bytes:
     max_block_width = CARD_WIDTH - CARD_TEXT_MARGIN * 2
     max_block_height = CARD_HEIGHT - CARD_TEXT_MARGIN * 2
 
-    # テキストの長さに応じて折り返し幅とフォントサイズを自動調整し、
-    # 余白に収まる最大サイズを採用する。
-    chosen = None
-    for chars_per_line, font_size in (
-        (8, 100),
-        (10, 86),
-        (12, 74),
-        (14, 62),
-        (16, 54),
-        (18, 46),
-    ):
-        font = ImageFont.truetype(font_path, font_size)
-        lines = _wrap_japanese(text, chars_per_line)
-        widths, heights = _measure_lines(draw, lines, font)
-        line_spacing = int(font_size * 0.55)
-        block_width = max(widths) if widths else 0
-        block_height = sum(heights) + line_spacing * (len(lines) - 1)
+    scale = 1.0
+    while True:
+        rendered, block_width, block_height, line_spacing = _layout_card_lines(
+            draw, font_path, card_lines, scale
+        )
         if block_width <= max_block_width and block_height <= max_block_height:
-            chosen = (font, lines, widths, heights, line_spacing, block_height)
             break
-
-    if chosen is None:
-        # どのサイズでも収まらない極端に長いテキストは、最小サイズで強制描画する。
-        font = ImageFont.truetype(font_path, 46)
-        lines = _wrap_japanese(text, 18)
-        widths, heights = _measure_lines(draw, lines, font)
-        line_spacing = int(46 * 0.55)
-        block_height = sum(heights) + line_spacing * (len(lines) - 1)
-        chosen = (font, lines, widths, heights, line_spacing, block_height)
-
-    font, lines, widths, heights, line_spacing, block_height = chosen
+        if scale <= CARD_MIN_SCALE:
+            break
+        scale -= 0.05
 
     y = (CARD_HEIGHT - block_height) / 2
-    for line, line_width, line_height in zip(lines, widths, heights):
+    for text, font, color, line_width, line_height in rendered:
         x = (CARD_WIDTH - line_width) / 2
-        draw.text((x, y), line, font=font, fill=CARD_TEXT_COLOR)
+        draw.text((x, y), text, font=font, fill=color)
         y += line_height + line_spacing
 
     output = io.BytesIO()
@@ -481,21 +513,28 @@ def git_commit_and_push(paths: list[str], message: str) -> None:
     subprocess.run(["git", "push"], check=True)
 
 
-def create_issue(tweet_intro: str, card_message: str, image_path: str) -> dict:
+def create_issue(tweet_intro: str, card_lines: list[dict], image_path: str) -> dict:
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
     branch = os.environ.get("GITHUB_REF_NAME", "main")
 
     raw_image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{image_path}"
     # post_approved.py は meta["text"] をそのまま X の投稿本文として使う。
-    # card_message は画像に焼き込み済みのため meta には含めない。
+    # card_lines は画像に焼き込み済みのため meta には含めない。
     meta = json.dumps({"text": tweet_intro, "image_path": image_path}, ensure_ascii=False)
+
+    card_preview = "\n".join(
+        f"> {'**' if line['size'] == 'large' else ''}{line['text']}"
+        f"{'**' if line['size'] == 'large' else ''}"
+        f"{'（accent）' if line['color'] == 'accent' else ''}"
+        for line in card_lines
+    )
 
     body = (
         f"## 投稿テキスト（導入・フック）\n\n"
         f"> {tweet_intro}\n\n"
-        f"## 画像カードメッセージ（本音の核心）\n\n"
-        f"> {card_message}\n\n"
+        f"## 画像カードメッセージ（本音の核心・行構成）\n\n"
+        f"{card_preview}\n\n"
         f"## テキストカードプレビュー\n\n"
         f"![draft image]({raw_image_url})\n\n"
         f"---\n"
@@ -524,14 +563,14 @@ def main() -> None:
 
     draft = generate_draft_texts(client)
     print(f"投稿テキスト（導入）: {draft['tweet_intro']}")
-    print(f"画像カードメッセージ（核心）: {draft['card_message']}")
+    print(f"画像カード行構成（核心）: {draft['card_lines']}")
 
-    image_bytes = build_text_card(draft["card_message"])
+    image_bytes = build_text_card(draft["card_lines"])
     image_path = save_image(image_bytes)
     print(f"テキストカードを保存しました: {image_path}")
     git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
 
-    issue = create_issue(draft["tweet_intro"], draft["card_message"], image_path)
+    issue = create_issue(draft["tweet_intro"], draft["card_lines"], image_path)
     print(f"Issue を作成しました: {issue['html_url']}")
 
 
