@@ -14,13 +14,15 @@ import random
 import re
 import subprocess
 import sys
+import tempfile
+import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
 
 import requests
 from google import genai
 from google.genai import types
-from PIL import Image, ImageDraw, ImageFont, ImageFilter
+from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
 # API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
 # （通常は client.models.list() で取得した現行モデルが優先される）
@@ -39,19 +41,38 @@ JST = timezone(timedelta(hours=9))
 # --- テキストカード描画設定（日常風景ムード + ポスター風レイアウト） ---
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1200
-CARD_TEXT_MARGIN = 140
-# 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため）。
-CARD_OVERLAY_OPACITY = 130
+CARD_TEXT_MARGIN = 110
+# 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため。約65%）。
+CARD_OVERLAY_OPACITY = 165
 # 行ごとのジャンプ率（サイズ差）と配色のメリハリ設定。
 CARD_COLOR_WHITE = (255, 255, 255)
 CARD_COLOR_ACCENT = (255, 230, 0)  # #FFE600 ビビッドなイエロー
-CARD_FONT_SIZE_NORMAL = 60
-CARD_FONT_SIZE_LARGE = 92
+CARD_FONT_SIZE_NORMAL = 88
+CARD_FONT_SIZE_LARGE = 136
 CARD_LINE_SPACING_RATIO = 0.35
 CARD_MIN_SCALE = 0.4  # 収まらない場合に縮小する下限
 
-# 外部の写真API（Unsplash等）には依存せず、Pillow だけで完結する日常の
-# ムードを表現する。ネットワーク不要・APIキー不要で確実に動作させるため。
+# --- 背景写真（写真APIが失敗した場合は必ずローカル生成にフォールバックする） ---
+# Unsplash Source (source.unsplash.com) は 2025 年に廃止されサービスが
+# 停止しているため使用しない。代わりに、既にこのプロジェクトで実績のある
+# Pollinations（APIキー不要）から写真的な背景画像を試みに取得する。
+POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
+PHOTO_BACKGROUND_MODEL = "flux"
+PHOTO_BACKGROUND_RETRIES = 2
+PHOTO_BACKGROUND_KEYWORDS = [
+    "nature landscape",
+    "city skyline",
+    "sky and clouds",
+    "quiet street",
+    "coffee shop window",
+    "sunset",
+    "rainy window",
+    "morning light",
+]
+
+# 写真背景の取得に失敗した場合の最終フォールバック。外部の写真API（Unsplash等）
+# には依存せず、Pillow だけで完結する日常のムードを表現する。ネットワーク
+# 不要・APIキー不要で確実に動作させるため。
 CARD_MOOD_THEMES = [
     {  # 夕暮れの街
         "name": "dusk_skyline",
@@ -94,6 +115,25 @@ CJK_FONT_CANDIDATES = [
     "C:/Windows/Fonts/meiryob.ttc",
     "C:/Windows/Fonts/msgothic.ttc",
 ]
+
+# --- フォントバリエーション（毎回ランダムに1スタイルを選ぶ） ---
+# 「怨霊フォント」はGoogle Fontsに実在を確認できなかったため採用していない。
+# 以下はいずれも https://github.com/google/fonts (raw.githubusercontent.com)
+# から実際にダウンロード可能なことを確認済みの実在フォントのみを使用する。
+FONT_STYLE_GOTHIC = "gothic"  # 力強いインパクト（Noto Sans CJK、apt導入済み）
+FONT_STYLE_HANDWRITTEN = "handwritten"  # 手書き風・脱力・エモい
+FONT_STYLE_BRUSH = "brush"  # 明朝・筆文字、情緒・シリアスな切れ味
+FONT_STYLES = (FONT_STYLE_GOTHIC, FONT_STYLE_HANDWRITTEN, FONT_STYLE_BRUSH)
+
+DOWNLOADABLE_FONTS = {
+    FONT_STYLE_HANDWRITTEN: [
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/kleeone/KleeOne-Regular.ttf",
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/yujiboku/YujiBoku-Regular.ttf",
+    ],
+    FONT_STYLE_BRUSH: [
+        "https://raw.githubusercontent.com/google/fonts/main/ofl/shipporimincho/ShipporiMincho-Bold.ttf",
+    ],
+}
 
 PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
 中の人です。新人社員・アルバイト・20代若手が思わず「それな」「わかりすぎる」と
@@ -308,6 +348,56 @@ def _find_cjk_font_path() -> str:
     )
 
 
+def _download_font(url: str) -> str | None:
+    """フォントファイルをダウンロードし、ローカルパスを返す（失敗時は None）。
+
+    同じ実行内で再利用できるよう一時ディレクトリにキャッシュする。
+    """
+    cache_dir = os.path.join(tempfile.gettempdir(), "koenidashiteko_fonts")
+    os.makedirs(cache_dir, exist_ok=True)
+    dest = os.path.join(cache_dir, url.rsplit("/", 1)[-1])
+
+    if os.path.exists(dest) and os.path.getsize(dest) > 0:
+        return dest
+
+    try:
+        response = requests.get(url, timeout=15)
+        response.raise_for_status()
+        if not response.content:
+            raise RuntimeError("空のレスポンスでした")
+        with open(dest, "wb") as f:
+            f.write(response.content)
+        return dest
+    except Exception as exc:  # noqa: BLE001
+        print(f"[font] フォントのダウンロードに失敗しました ({url}): {exc}", file=sys.stderr)
+        return None
+
+
+def _resolve_font_path(style: str) -> str:
+    """指定スタイルのフォントパスを返す。ダウンロード失敗時はゴシックに
+    フォールバックするため、この関数が例外を送出することはない
+    （フォント取得はあくまで見た目の演出であり、カード生成自体は
+    絶対に止めないため）。
+    """
+    urls = list(DOWNLOADABLE_FONTS.get(style, []))
+    random.shuffle(urls)
+    for url in urls:
+        path = _download_font(url)
+        if path:
+            return path
+    if urls:
+        print(
+            f"[font] スタイル '{style}' のフォント取得にすべて失敗したため、"
+            "ゴシック体にフォールバックします。",
+            file=sys.stderr,
+        )
+    return _find_cjk_font_path()
+
+
+def _choose_font_style() -> str:
+    return random.choice(FONT_STYLES)
+
+
 def _make_vertical_gradient(
     width: int, height: int, color_top: tuple, color_bottom: tuple
 ) -> Image.Image:
@@ -398,6 +488,52 @@ def _draw_horizon_glow(image: Image.Image) -> None:
     image.alpha_composite(overlay)
 
 
+def _fetch_photo_background(width: int, height: int) -> Image.Image:
+    """Pollinations から日常の雰囲気を感じさせる写真的な背景画像を取得する。
+
+    失敗した場合は例外を送出する。呼び出し元は必ず `_make_scenic_background`
+    へフォールバックすること（写真取得はあくまで演出であり、これが失敗しても
+    カード生成自体は絶対に止めないため）。
+    """
+    keyword = random.choice(PHOTO_BACKGROUND_KEYWORDS)
+    prompt = (
+        f"{keyword}, atmospheric everyday life photography, cinematic natural "
+        f"lighting, high detail, photorealistic"
+    )
+    encoded_prompt = urllib.parse.quote(prompt, safe="")
+
+    last_error: Exception | None = None
+    for attempt in range(1, PHOTO_BACKGROUND_RETRIES + 1):
+        seed = random.randint(0, 2**31 - 1)
+        url = (
+            f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
+            f"?width={width}&height={height}&model={PHOTO_BACKGROUND_MODEL}"
+            f"&nologo=true&seed={seed}"
+        )
+        try:
+            response = requests.get(url, timeout=20)
+            response.raise_for_status()
+            content_type = response.headers.get("Content-Type", "")
+            if not content_type.startswith("image/") or not response.content:
+                raise RuntimeError(
+                    f"画像以外のレスポンスでした (Content-Type: {content_type!r})"
+                )
+            photo = Image.open(io.BytesIO(response.content)).convert("RGBA")
+            if photo.size != (width, height):
+                photo = ImageOps.fit(photo, (width, height))
+            print(f"[background] 写真背景を取得しました（keyword={keyword!r}）。")
+            return photo
+        except Exception as exc:  # noqa: BLE001
+            print(
+                f"[background] 写真背景の取得に失敗しました "
+                f"(試行 {attempt}/{PHOTO_BACKGROUND_RETRIES}): {exc}",
+                file=sys.stderr,
+            )
+            last_error = exc
+
+    raise RuntimeError("写真背景の取得にすべて失敗しました") from last_error
+
+
 def _make_scenic_background(width: int, height: int) -> Image.Image:
     """日常のワンシーンを感じさせるムード背景を、写真APIなしで手続き的に生成する。"""
     theme = random.choice(CARD_MOOD_THEMES)
@@ -452,9 +588,18 @@ def build_text_card(card_lines: list[dict]) -> bytes:
     ここでは単語途中の再折り返しは行わない。行が余白に収まらない場合のみ、
     行の区切りを保ったまま全体を比例縮小する安全策を取る。
     """
-    font_path = _find_cjk_font_path()
+    font_style = _choose_font_style()
+    font_path = _resolve_font_path(font_style)
+    print(f"[font] 使用フォントスタイル: {font_style} ({font_path})")
 
-    image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
+    try:
+        image = _fetch_photo_background(CARD_WIDTH, CARD_HEIGHT)
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"[background] 写真背景を断念し、ローカル生成の背景にフォールバックします: {exc}",
+            file=sys.stderr,
+        )
+        image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
 
     # 中央の白文字がくっきり読めるよう、暗いフィルターを全体に重ねてコントラストを確保する。
     dark_overlay = Image.new("RGBA", image.size, (0, 0, 0, CARD_OVERLAY_OPACITY))
