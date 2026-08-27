@@ -10,6 +10,7 @@ Gemini API でペルソナに基づく「本音ぼやきテキスト」を生成
 import io
 import json
 import os
+import random
 import re
 import subprocess
 import sys
@@ -35,19 +36,42 @@ TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
 
 JST = timezone(timedelta(hours=9))
 
-# --- テキストカード描画設定（プロデザイン調ダークテーマ） ---
+# --- テキストカード描画設定（日常風景ムード + ポスター風レイアウト） ---
 CARD_WIDTH = 1200
 CARD_HEIGHT = 1200
-CARD_BG_TOP = (18, 22, 26)  # #12161A
-CARD_BG_BOTTOM = (30, 35, 42)  # #1E232A
-CARD_PANEL_MARGIN = 56
-CARD_PANEL_RADIUS = 40
-CARD_ACCENT_COLOR = (77, 224, 189)  # 発光ボーダー・バッジに使うアクセントカラー
 CARD_TEXT_COLOR = (255, 255, 255)
-CARD_FOOTER_COLOR = (150, 160, 172)
-CARD_FOOTER_LABEL = "声なき多数派  |  @koenidashiteko"
-CARD_BADGE_LABEL = "VOICE OF SILENT MAJORITY"
-CARD_QUOTE_MARK = "“"
+CARD_TEXT_MARGIN = 140
+# 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため）。
+CARD_OVERLAY_OPACITY = 130
+
+# 外部の写真API（Unsplash等）には依存せず、Pillow だけで完結する日常の
+# ムードを表現する。ネットワーク不要・APIキー不要で確実に動作させるため。
+CARD_MOOD_THEMES = [
+    {  # 夕暮れの街
+        "name": "dusk_skyline",
+        "sky_top": (255, 158, 92),
+        "sky_bottom": (43, 27, 74),
+        "silhouette": (18, 13, 26),
+    },
+    {  # オフィスの窓
+        "name": "office_window",
+        "sky_top": (68, 90, 122),
+        "sky_bottom": (18, 24, 36),
+        "silhouette": None,
+    },
+    {  # 雨の日の交差点
+        "name": "rainy_crossing",
+        "sky_top": (46, 58, 78),
+        "sky_bottom": (12, 16, 24),
+        "silhouette": None,
+    },
+    {  # 早朝の空
+        "name": "early_morning",
+        "sky_top": (255, 226, 214),
+        "sky_bottom": (140, 172, 210),
+        "silhouette": (54, 64, 84),
+    },
+]
 
 # apt-get install fonts-noto-cjk（Ubuntu/GitHub Actions）で入る標準パスを優先し、
 # 環境によって異なる ipaexfont のパッケージ配置や、ローカル Windows での動作
@@ -272,124 +296,132 @@ def _make_vertical_gradient(
     return Image.composite(overlay, base, mask)
 
 
-def _draw_rounded_panel_with_glow(base: Image.Image) -> None:
-    """中央に角丸パネルを描き、外周にアクセントカラーの微かな発光ボーダーを重ねる。"""
-    box = (
-        CARD_PANEL_MARGIN,
-        CARD_PANEL_MARGIN,
-        CARD_WIDTH - CARD_PANEL_MARGIN,
-        CARD_HEIGHT - CARD_PANEL_MARGIN,
-    )
-
-    # 発光レイヤー: パネル外周と同じ角丸ボーダーをぼかして下敷きにする。
-    glow_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    glow_draw = ImageDraw.Draw(glow_layer)
-    glow_draw.rounded_rectangle(
-        box, radius=CARD_PANEL_RADIUS, outline=(*CARD_ACCENT_COLOR, 140), width=6
-    )
-    glow_layer = glow_layer.filter(ImageFilter.GaussianBlur(14))
-    base.alpha_composite(glow_layer)
-
-    # パネル本体（背景よりわずかに明るいダークトーン）とシャープな境界線。
-    panel_draw = ImageDraw.Draw(base)
-    panel_fill = tuple(min(255, c + 6) for c in CARD_BG_BOTTOM)
-    panel_draw.rounded_rectangle(
-        box, radius=CARD_PANEL_RADIUS, fill=(*panel_fill, 255)
-    )
-    panel_draw.rounded_rectangle(
-        box, radius=CARD_PANEL_RADIUS, outline=(*CARD_ACCENT_COLOR, 200), width=2
-    )
+def _draw_skyline_silhouette(image: Image.Image, color: tuple) -> None:
+    """夕暮れ・早朝テーマ向けに、下部にビル群のシルエットを描く。"""
+    width, height = image.size
+    draw = ImageDraw.Draw(image)
+    base_y = int(height * 0.74)
+    x = 0
+    while x < width:
+        block_width = random.randint(70, 160)
+        block_height = random.randint(int(height * 0.06), int(height * 0.24))
+        draw.rectangle(
+            [x, base_y - block_height, x + block_width, height], fill=(*color, 255)
+        )
+        x += block_width + random.randint(4, 16)
 
 
-def _draw_giant_quote_mark(base: Image.Image, font_path: str) -> None:
-    """奥行きを出すための、半透明の巨大な引用符を左上寄りに配置する。"""
-    quote_font = ImageFont.truetype(font_path, 620)
-    quote_layer = Image.new("RGBA", base.size, (0, 0, 0, 0))
-    quote_draw = ImageDraw.Draw(quote_layer)
-    quote_draw.text(
-        (CARD_PANEL_MARGIN + 20, CARD_PANEL_MARGIN - 60),
-        CARD_QUOTE_MARK,
-        font=quote_font,
-        fill=(255, 255, 255, 28),  # 約11%の不透明度
-    )
-    base.alpha_composite(quote_layer)
+def _draw_window_grid(image: Image.Image) -> None:
+    """オフィスの窓テーマ向けに、ぼんやり灯る窓明かりのグリッドを描く。"""
+    width, height = image.size
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    cols, rows = 8, 10
+    cell_w, cell_h = width / cols, height / rows
+    for row in range(rows):
+        for col in range(cols):
+            if random.random() < 0.4:
+                left = col * cell_w + cell_w * 0.15
+                top = row * cell_h + cell_h * 0.15
+                right = left + cell_w * 0.7
+                bottom = top + cell_h * 0.7
+                alpha = random.randint(10, 35)
+                draw.rectangle([left, top, right, bottom], fill=(255, 238, 200, alpha))
+    image.alpha_composite(overlay)
 
 
-def _draw_spaced_text(
-    draw: ImageDraw.ImageDraw,
-    center_x: int,
-    y: int,
-    text: str,
-    font: ImageFont.FreeTypeFont,
-    fill,
-    letter_spacing: int = 5,
-) -> None:
-    """英字バッジ用に、文字間を少し空けた読みやすいレタースペーシングで描く。"""
-    widths = [draw.textbbox((0, 0), ch, font=font)[2] for ch in text]
-    total_width = sum(widths) + letter_spacing * (len(text) - 1)
-    x = center_x - total_width / 2
-    for ch, w in zip(text, widths):
-        draw.text((x, y), ch, font=font, fill=fill)
-        x += w + letter_spacing
+def _draw_rain_streaks(image: Image.Image) -> None:
+    """雨の日テーマ向けに、細い雨粒の筋を散らす。"""
+    width, height = image.size
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    for _ in range(140):
+        x = random.randint(0, width)
+        y = random.randint(0, height)
+        length = random.randint(30, 90)
+        alpha = random.randint(15, 45)
+        draw.line(
+            [(x, y), (x - int(length * 0.2), y + length)],
+            fill=(205, 218, 232, alpha),
+            width=2,
+        )
+    image.alpha_composite(overlay)
 
 
-def _draw_badge(base: Image.Image, font_path: str) -> None:
-    draw = ImageDraw.Draw(base)
-    badge_font = ImageFont.truetype(font_path, 24)
-    letter_spacing = 5
-    widths = [draw.textbbox((0, 0), ch, font=badge_font)[2] for ch in CARD_BADGE_LABEL]
-    text_width = sum(widths) + letter_spacing * (len(CARD_BADGE_LABEL) - 1)
+def _draw_bokeh_lights(image: Image.Image) -> None:
+    """雨の日テーマ向けに、街灯の淡いにじみ（ボケ光）を加える。"""
+    width, height = image.size
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    colors = [(255, 200, 120), (255, 150, 150), (150, 200, 255)]
+    for _ in range(6):
+        cx = random.randint(0, width)
+        cy = random.randint(int(height * 0.6), height)
+        r = random.randint(30, 70)
+        color = random.choice(colors)
+        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, 90))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(24))
+    image.alpha_composite(overlay)
 
-    pad_x, pad_y = 28, 16
-    pill_width = text_width + pad_x * 2
-    pill_height = 24 + pad_y * 2
-    pill_left = (CARD_WIDTH - pill_width) / 2
-    pill_top = CARD_PANEL_MARGIN + 56
-    pill_box = (pill_left, pill_top, pill_left + pill_width, pill_top + pill_height)
 
-    draw.rounded_rectangle(pill_box, radius=pill_height / 2, fill=(*CARD_ACCENT_COLOR, 255))
-    _draw_spaced_text(
-        draw,
-        CARD_WIDTH / 2,
-        pill_top + pad_y,
-        CARD_BADGE_LABEL,
-        badge_font,
-        fill=tuple(CARD_BG_TOP),
-        letter_spacing=letter_spacing,
-    )
-    return pill_top + pill_height
+def _draw_horizon_glow(image: Image.Image) -> None:
+    """早朝テーマ向けに、地平線あたりに柔らかい光の滲みを加える。"""
+    width, height = image.size
+    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
+    draw = ImageDraw.Draw(overlay)
+    cx, cy = width / 2, int(height * 0.62)
+    r = int(width * 0.32)
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 246, 224, 110))
+    overlay = overlay.filter(ImageFilter.GaussianBlur(40))
+    image.alpha_composite(overlay)
+
+
+def _make_scenic_background(width: int, height: int) -> Image.Image:
+    """日常のワンシーンを感じさせるムード背景を、写真APIなしで手続き的に生成する。"""
+    theme = random.choice(CARD_MOOD_THEMES)
+    image = _make_vertical_gradient(
+        width, height, theme["sky_top"], theme["sky_bottom"]
+    ).convert("RGBA")
+
+    if theme["name"] == "dusk_skyline":
+        _draw_skyline_silhouette(image, theme["silhouette"])
+    elif theme["name"] == "office_window":
+        _draw_window_grid(image)
+    elif theme["name"] == "rainy_crossing":
+        _draw_rain_streaks(image)
+        _draw_bokeh_lights(image)
+    elif theme["name"] == "early_morning":
+        _draw_horizon_glow(image)
+        _draw_skyline_silhouette(image, theme["silhouette"])
+
+    return image
 
 
 def build_text_card(text: str) -> bytes:
-    """ぼやきテキストを、プロデザイン調のダークテーマグラフィックカードとして描画する。"""
+    """card_message を、日常風景ムードの背景に載せたポスター風カードとして描画する。"""
     font_path = _find_cjk_font_path()
 
-    background = _make_vertical_gradient(CARD_WIDTH, CARD_HEIGHT, CARD_BG_TOP, CARD_BG_BOTTOM)
-    image = background.convert("RGBA")
+    image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
 
-    _draw_rounded_panel_with_glow(image)
-    _draw_giant_quote_mark(image, font_path)
-    badge_bottom = _draw_badge(image, font_path)
+    # 中央の白文字がくっきり読めるよう、暗いフィルターを全体に重ねてコントラストを確保する。
+    dark_overlay = Image.new("RGBA", image.size, (0, 0, 0, CARD_OVERLAY_OPACITY))
+    image = Image.alpha_composite(image, dark_overlay)
 
     draw = ImageDraw.Draw(image)
-    footer_font = ImageFont.truetype(font_path, 30)
-    footer_top = CARD_HEIGHT - CARD_PANEL_MARGIN - 76
 
-    text_area_top = badge_bottom + 40
-    text_area_bottom = footer_top - 40
-    max_block_width = CARD_WIDTH - (CARD_PANEL_MARGIN + 100) * 2
-    max_block_height = text_area_bottom - text_area_top
+    max_block_width = CARD_WIDTH - CARD_TEXT_MARGIN * 2
+    max_block_height = CARD_HEIGHT - CARD_TEXT_MARGIN * 2
 
     # テキストの長さに応じて折り返し幅とフォントサイズを自動調整し、
     # 余白に収まる最大サイズを採用する。
     chosen = None
     for chars_per_line, font_size in (
-        (8, 92),
-        (10, 80),
-        (12, 68),
-        (14, 58),
-        (16, 50),
-        (18, 44),
+        (8, 100),
+        (10, 86),
+        (12, 74),
+        (14, 62),
+        (16, 54),
+        (18, 46),
     ):
         font = ImageFont.truetype(font_path, font_size)
         lines = _wrap_japanese(text, chars_per_line)
@@ -403,29 +435,20 @@ def build_text_card(text: str) -> bytes:
 
     if chosen is None:
         # どのサイズでも収まらない極端に長いテキストは、最小サイズで強制描画する。
-        font = ImageFont.truetype(font_path, 44)
+        font = ImageFont.truetype(font_path, 46)
         lines = _wrap_japanese(text, 18)
         widths, heights = _measure_lines(draw, lines, font)
-        line_spacing = int(44 * 0.55)
+        line_spacing = int(46 * 0.55)
         block_height = sum(heights) + line_spacing * (len(lines) - 1)
         chosen = (font, lines, widths, heights, line_spacing, block_height)
 
     font, lines, widths, heights, line_spacing, block_height = chosen
 
-    y = text_area_top + (max_block_height - block_height) / 2
+    y = (CARD_HEIGHT - block_height) / 2
     for line, line_width, line_height in zip(lines, widths, heights):
         x = (CARD_WIDTH - line_width) / 2
         draw.text((x, y), line, font=font, fill=CARD_TEXT_COLOR)
         y += line_height + line_spacing
-
-    footer_bbox = draw.textbbox((0, 0), CARD_FOOTER_LABEL, font=footer_font)
-    footer_width = footer_bbox[2] - footer_bbox[0]
-    draw.text(
-        ((CARD_WIDTH - footer_width) / 2, footer_top),
-        CARD_FOOTER_LABEL,
-        font=footer_font,
-        fill=CARD_FOOTER_COLOR,
-    )
 
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG")
