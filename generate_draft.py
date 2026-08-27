@@ -45,10 +45,14 @@ CARD_TEXT_MARGIN = 110
 # 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため。約65%）。
 CARD_OVERLAY_OPACITY = 165
 # 行ごとのジャンプ率（サイズ差）と配色のメリハリ設定。
-CARD_COLOR_WHITE = (255, 255, 255)
-CARD_COLOR_ACCENT = (255, 230, 0)  # #FFE600 ビビッドなイエロー
-CARD_FONT_SIZE_NORMAL = 100
-CARD_FONT_SIZE_LARGE = 156
+# 振り（normal）は控えめなオフホワイト、落とし（large/accent）は墨に映える
+# 山吹金。素の白(#FFFFFF)/ビビッドイエロー(#FFE600)より、筆文字カードとして
+# 落ち着きと重厚感が出る配色に調整している。
+CARD_COLOR_WHITE = (240, 240, 240)  # #F0F0F0
+CARD_COLOR_ACCENT = (255, 215, 0)  # #FFD700 山吹金
+CARD_COLOR_INK = (18, 14, 12)  # 毛筆の縁取り・影に使う墨色
+CARD_FONT_SIZE_NORMAL = 68
+CARD_FONT_SIZE_LARGE = 150
 CARD_MAX_LINES = 3  # 超短文構成のため、行数の安全上限
 CARD_LINE_SPACING_RATIO = 0.35
 CARD_MIN_SCALE = 0.4  # 収まらない場合に縮小する下限
@@ -117,24 +121,22 @@ CJK_FONT_CANDIDATES = [
     "C:/Windows/Fonts/msgothic.ttc",
 ]
 
-# --- フォントバリエーション（毎回ランダムに1スタイルを選ぶ） ---
-# 「怨霊フォント」はGoogle Fontsに実在を確認できなかったため採用していない。
-# 以下はいずれも https://github.com/google/fonts (raw.githubusercontent.com)
+# --- ハイブリッドタイポグラフィ用フォント（行の役割ごとに固定で使い分ける） ---
+# 「振り」の行（size="normal"）には端正な明朝体、「落とし」の行
+# （size="large"、オチ・キラーフレーズ）には迫力ある毛筆体を使う。
+#
+# 「衡山毛筆フォント（KouzanBrushFont）」はGoogle Fontsに実在せず、配布元が
+# CIから安定してダウンロードできる保証がない（このプロジェクトでは以前
+# 「怨霊フォント」でも同様の理由で採用を見送っている）ため使用しない。
+# 代わりに、いずれも https://github.com/google/fonts (raw.githubusercontent.com)
 # から実際にダウンロード可能なことを確認済みの実在フォントのみを使用する。
-FONT_STYLE_GOTHIC = "gothic"  # 力強いインパクト（Noto Sans CJK、apt導入済み）
-FONT_STYLE_HANDWRITTEN = "handwritten"  # 手書き風・脱力・エモい
-FONT_STYLE_BRUSH = "brush"  # 明朝・筆文字、情緒・シリアスな切れ味
-FONT_STYLES = (FONT_STYLE_GOTHIC, FONT_STYLE_HANDWRITTEN, FONT_STYLE_BRUSH)
-
-DOWNLOADABLE_FONTS = {
-    FONT_STYLE_HANDWRITTEN: [
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/kleeone/KleeOne-Regular.ttf",
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/yujiboku/YujiBoku-Regular.ttf",
-    ],
-    FONT_STYLE_BRUSH: [
-        "https://raw.githubusercontent.com/google/fonts/main/ofl/shipporimincho/ShipporiMincho-Bold.ttf",
-    ],
-}
+CARD_FONT_URLS_NORMAL = [
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/shipporimincho/ShipporiMincho-Bold.ttf",
+]
+CARD_FONT_URLS_BRUSH = [
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/yujiboku/YujiBoku-Regular.ttf",
+    "https://raw.githubusercontent.com/google/fonts/main/ofl/reggaeone/ReggaeOne-Regular.ttf",
+]
 
 PERSONA_PROMPT = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
 中の人です。「本音を言えない世の中の代弁者」として、新人社員・アルバイト・
@@ -389,29 +391,25 @@ def _download_font(url: str) -> str | None:
         return None
 
 
-def _resolve_font_path(style: str) -> str:
-    """指定スタイルのフォントパスを返す。ダウンロード失敗時はゴシックに
-    フォールバックするため、この関数が例外を送出することはない
+def _resolve_font_path(role: str, urls: list[str]) -> str:
+    """指定ロール（normal/brush）のフォントパスを返す。ダウンロード失敗時は
+    ゴシックにフォールバックするため、この関数が例外を送出することはない
     （フォント取得はあくまで見た目の演出であり、カード生成自体は
     絶対に止めないため）。
     """
-    urls = list(DOWNLOADABLE_FONTS.get(style, []))
-    random.shuffle(urls)
-    for url in urls:
+    shuffled = list(urls)
+    random.shuffle(shuffled)
+    for url in shuffled:
         path = _download_font(url)
         if path:
             return path
-    if urls:
+    if shuffled:
         print(
-            f"[font] スタイル '{style}' のフォント取得にすべて失敗したため、"
+            f"[font] ロール '{role}' のフォント取得にすべて失敗したため、"
             "ゴシック体にフォールバックします。",
             file=sys.stderr,
         )
     return _find_cjk_font_path()
-
-
-def _choose_font_style() -> str:
-    return random.choice(FONT_STYLES)
 
 
 def _make_vertical_gradient(
@@ -571,30 +569,131 @@ def _make_scenic_background(width: int, height: int) -> Image.Image:
     return image
 
 
-def _resolve_line_style(line: dict) -> tuple[int, tuple]:
-    font_size = CARD_FONT_SIZE_LARGE if line["size"] == "large" else CARD_FONT_SIZE_NORMAL
+def _resolve_line_style(line: dict) -> tuple[int, tuple, bool]:
+    """行の役割（振り/落とし）から、フォントサイズ・色・毛筆ロールかどうかを返す。
+
+    「落とし」の行（size="large"、オチ・キラーフレーズ）だけを毛筆体・金色の
+    特大サイズにし、それ以外の「振り」の行は明朝体・オフホワイトの通常
+    サイズにする、というハイブリッドタイポグラフィのルールの中枢。
+    """
+    is_brush = line["size"] == "large"
+    font_size = CARD_FONT_SIZE_LARGE if is_brush else CARD_FONT_SIZE_NORMAL
     color = CARD_COLOR_ACCENT if line["color"] == "accent" else CARD_COLOR_WHITE
-    return font_size, color
+    return font_size, color, is_brush
 
 
 def _layout_card_lines(
-    draw: ImageDraw.ImageDraw, font_path: str, card_lines: list[dict], scale: float
-) -> tuple[list[tuple], int, int]:
-    """指定スケールで各行を計測し、(描画情報リスト, 最大幅, 合計高さ) を返す。"""
+    card_lines: list[dict], normal_font_path: str, brush_font_path: str, scale: float
+) -> tuple[list[dict], int, int, int]:
+    """指定スケールで各行を計測し、(描画情報リスト, 最大幅, 合計高さ, 行間) を返す。
+
+    行の高さは textbbox の見た目上のバウンディングボックスではなく
+    `font.getmetrics()` の ascent/descent を基準にする。毛筆フォントは
+    デザイン上の内部余白（サイドベアリング）が明朝体と大きく異なるため、
+    bbox基準だと振り・落とし間の行間が不揃いに見えてしまうのを防ぐため。
+    """
     rendered = []
     for line in card_lines:
-        base_size, color = _resolve_line_style(line)
+        base_size, color, is_brush = _resolve_line_style(line)
+        font_path = brush_font_path if is_brush else normal_font_path
         font_size = max(16, int(base_size * scale))
         font = ImageFont.truetype(font_path, font_size)
-        left, top, right, bottom = draw.textbbox((0, 0), line["text"], font=font)
-        width, height = right - left, bottom - top
-        rendered.append((line["text"], font, color, width, height))
+        ascent, descent = font.getmetrics()
+        left, top, right, bottom = font.getbbox(line["text"])
+        width = right - left
+        rendered.append(
+            {
+                "text": line["text"],
+                "font": font,
+                "color": color,
+                "is_brush": is_brush,
+                "width": width,
+                "ascent": ascent,
+                "descent": descent,
+            }
+        )
 
-    max_width = max((r[3] for r in rendered), default=0)
-    max_line_height = max((r[4] for r in rendered), default=0)
-    line_spacing = int(max_line_height * CARD_LINE_SPACING_RATIO)
-    total_height = sum(r[4] for r in rendered) + line_spacing * (len(rendered) - 1)
+    max_width = max((r["width"] for r in rendered), default=0)
+    # 行間の基準は「振り」の行の行高にする。毛筆フォントは行高が
+    # 大きく振れがちで、それを基準にすると行間が間延びするため。
+    normal_heights = [r["ascent"] + r["descent"] for r in rendered if not r["is_brush"]]
+    all_heights = [r["ascent"] + r["descent"] for r in rendered]
+    base_line_height = max(normal_heights or all_heights, default=0)
+    line_spacing = int(base_line_height * CARD_LINE_SPACING_RATIO)
+    total_height = sum(all_heights) + line_spacing * (len(rendered) - 1)
     return rendered, max_width, total_height, line_spacing
+
+
+def _add_center_bottom_vignette(image: Image.Image) -> Image.Image:
+    """毛筆文字の可読性を極限まで高めるため、カード中央〜下部に向かって
+    暗くなる黒グラデーション（ヴィネット）を重ねる。"""
+    width, height = image.size
+    start = 0.28  # この高さ比率より上は暗くしない
+    max_alpha = 200
+    alpha_row = []
+    for y in range(height):
+        t = max(0.0, (y / height - start) / (1 - start))
+        alpha_row.append(int(max_alpha * (t**1.3)))
+
+    vignette = Image.new("RGBA", (width, height), (0, 0, 0, 0))
+    vignette.putdata(
+        [(0, 0, 0, alpha_row[y]) for y in range(height) for _ in range(width)]
+    )
+    return Image.alpha_composite(image, vignette)
+
+
+def _draw_card_line(image: Image.Image, line: dict, x: float, baseline_y: float) -> None:
+    """1行分のテキストを描画する。
+
+    振りの行: 控えめな黒のドロップシャドウ＋オフホワイトの本文。
+    落としの行（毛筆）: 墨がにじむような多重の柔らかい影＋太めの黒縁取り＋
+    山吹金の本文で、写真から浮き上がるようなインパクトを出す。
+    どちらも anchor="ms"（水平中央・垂直ベースライン）で描画するため、
+    フォントが異なっても各行のベースラインが揃った状態で積み上げられる。
+    """
+    text, font, color = line["text"], line["font"], line["color"]
+
+    if line["is_brush"]:
+        stroke_width = max(4, font.size // 16)
+
+        # 1) 墨のにじみのような、ぼかした多重シャドウで奥行きを出す。
+        glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
+        glow_draw = ImageDraw.Draw(glow)
+        for dx, dy, alpha in ((0, font.size * 0.09, 130), (font.size * 0.03, font.size * 0.03, 90)):
+            glow_draw.text(
+                (x + dx, baseline_y + dy),
+                text,
+                font=font,
+                anchor="ms",
+                fill=(*CARD_COLOR_INK, alpha),
+                stroke_width=stroke_width,
+                stroke_fill=(*CARD_COLOR_INK, alpha),
+            )
+        glow = glow.filter(ImageFilter.GaussianBlur(max(6, font.size // 14)))
+        image.alpha_composite(glow)
+
+        # 2) 太めの黒縁取り＋山吹金の本文。
+        draw = ImageDraw.Draw(image)
+        draw.text(
+            (x, baseline_y),
+            text,
+            font=font,
+            anchor="ms",
+            fill=(*color, 255),
+            stroke_width=stroke_width,
+            stroke_fill=(*CARD_COLOR_INK, 255),
+        )
+    else:
+        draw = ImageDraw.Draw(image)
+        shadow_offset = max(2, font.size // 22)
+        draw.text(
+            (x + shadow_offset, baseline_y + shadow_offset),
+            text,
+            font=font,
+            anchor="ms",
+            fill=(0, 0, 0, 150),
+        )
+        draw.text((x, baseline_y), text, font=font, anchor="ms", fill=(*color, 255))
 
 
 def build_text_card(card_lines: list[dict]) -> bytes:
@@ -604,9 +703,10 @@ def build_text_card(card_lines: list[dict]) -> bytes:
     ここでは単語途中の再折り返しは行わない。行が余白に収まらない場合のみ、
     行の区切りを保ったまま全体を比例縮小する安全策を取る。
     """
-    font_style = _choose_font_style()
-    font_path = _resolve_font_path(font_style)
-    print(f"[font] 使用フォントスタイル: {font_style} ({font_path})")
+    normal_font_path = _resolve_font_path("normal", CARD_FONT_URLS_NORMAL)
+    brush_font_path = _resolve_font_path("brush", CARD_FONT_URLS_BRUSH)
+    print(f"[font] 振り(normal)フォント: {normal_font_path}")
+    print(f"[font] 落とし(brush)フォント: {brush_font_path}")
 
     try:
         image = _fetch_photo_background(CARD_WIDTH, CARD_HEIGHT)
@@ -617,11 +717,11 @@ def build_text_card(card_lines: list[dict]) -> bytes:
         )
         image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
 
-    # 中央の白文字がくっきり読めるよう、暗いフィルターを全体に重ねてコントラストを確保する。
+    # 中央の文字がくっきり読めるよう、暗いフィルターを全体に重ねてコントラストを確保する。
     dark_overlay = Image.new("RGBA", image.size, (0, 0, 0, CARD_OVERLAY_OPACITY))
     image = Image.alpha_composite(image, dark_overlay)
-
-    draw = ImageDraw.Draw(image)
+    # さらに中央〜下部にかけて暗くなるヴィネットを重ね、毛筆文字の可読性を高める。
+    image = _add_center_bottom_vignette(image)
 
     max_block_width = CARD_WIDTH - CARD_TEXT_MARGIN * 2
     max_block_height = CARD_HEIGHT - CARD_TEXT_MARGIN * 2
@@ -629,7 +729,7 @@ def build_text_card(card_lines: list[dict]) -> bytes:
     scale = 1.0
     while True:
         rendered, block_width, block_height, line_spacing = _layout_card_lines(
-            draw, font_path, card_lines, scale
+            card_lines, normal_font_path, brush_font_path, scale
         )
         if block_width <= max_block_width and block_height <= max_block_height:
             break
@@ -637,11 +737,12 @@ def build_text_card(card_lines: list[dict]) -> bytes:
             break
         scale -= 0.05
 
+    x_center = CARD_WIDTH / 2
     y = (CARD_HEIGHT - block_height) / 2
-    for text, font, color, line_width, line_height in rendered:
-        x = (CARD_WIDTH - line_width) / 2
-        draw.text((x, y), text, font=font, fill=color)
-        y += line_height + line_spacing
+    for line in rendered:
+        baseline_y = y + line["ascent"]
+        _draw_card_line(image, line, x_center, baseline_y)
+        y += line["ascent"] + line["descent"] + line_spacing
 
     output = io.BytesIO()
     image.convert("RGB").save(output, format="PNG")
