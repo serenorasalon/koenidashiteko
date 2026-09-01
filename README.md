@@ -2,17 +2,18 @@
 
 X (旧Twitter) アカウント **声なき多数派 (@koenidashiteko)** 用の自動投稿システム。
 
-令和の職場・社会の風潮（タイパ、過度なコンプラ、形だけの働き方改革、1on1、
-ハラスメント過敏、手当なき新人教育など）に振り回される社会人のリアルな本音を
-ユーモアを交えて代弁する投稿を、Gemini API で自動生成し、承認フローを経て
-X に画像付きで自動投稿する。
+日々の激務に追われる社会人に向けて、偉人・アスリート・リーダーたちの名言と、
+それを「明日からの仕事にどう活かすか」を短く深く伝える投稿を、Gemini API で
+自動生成し、承認フローを経て X に画像付きで自動投稿する。曜日ごとにテーマ
+（挑戦・集中・チームワーク・逆境・達成・休息）を切り替える。
 
 ## 仕組み
 
 1. **下書き生成** (`generate_draft.py`)
-   - Gemini（テキストモデル）でペルソナに沿った本音ぼやきテキストと、
-     それを象徴する風刺画イラストの生成プロンプトを作成。
-   - Imagen (`imagen-3.0-generate-002`) で風刺画像を生成し `images/queue/` に保存。
+   - Gemini 3.6 Flash（`google.genai` SDK）で、曜日別テーマに沿った名言＋
+     現代社会人への解説の投稿本文と、それに添えるイラスト用の英語画像
+     プロンプトをJSON形式で生成。
+   - OpenAI `gpt-image-1` で画像プロンプトから画像を生成し `images/queue/` に保存。
    - 画像をコミット＆プッシュしたうえで、内容をプレビューする GitHub Issue を作成
      （`draft` ラベル）。
 2. **人間によるレビュー**
@@ -41,7 +42,8 @@ X に画像付きで自動投稿する。
 
 | シークレット名 | 用途 |
 | --- | --- |
-| `GEMINI_API_KEY` | Google Gemini API キー（テキスト・画像生成） |
+| `GEMINI_API_KEY` | Google Gemini API キー（投稿本文・画像プロンプト生成） |
+| `OPENAI_API_KEY` | OpenAI API キー（`gpt-image-1` による画像生成） |
 | `X_API_KEY` | X API Consumer Key |
 | `X_API_SECRET` | X API Consumer Secret |
 | `X_ACCESS_TOKEN` | X API Access Token（投稿権限付き） |
@@ -60,8 +62,10 @@ X に画像付きで自動投稿する。
 ```bash
 pip install -r requirements.txt
 
-# 下書き生成をテスト（GEMINI_API_KEY, GITHUB_TOKEN, GITHUB_REPOSITORY が必要）
+# 下書き生成をテスト（GEMINI_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN,
+# GITHUB_REPOSITORY が必要）
 export GEMINI_API_KEY=xxxx
+export OPENAI_API_KEY=xxxx
 export GITHUB_TOKEN=xxxx
 export GITHUB_REPOSITORY=serenorasalon/koenidashiteko
 python generate_draft.py

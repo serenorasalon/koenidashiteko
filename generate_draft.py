@@ -1,32 +1,32 @@
 """
-声なき多数派 (@koenidashiteko) 下書き＆テキストカード自動生成スクリプト。
+声なき多数派 (@koenidashiteko) 下書き＆画像自動生成スクリプト。
 
-Gemini API でペルソナに基づく「本音ぼやきテキスト」を生成し、Pillow で
-そのテキストをカード画像として描画する。生成した画像は images/queue/ に
-保存してリポジトリにコミット＆プッシュし、テキストと画像プレビューを
-載せた GitHub Issue を作成する。
+Gemini API で「社会人に響く偉人・アスリートの名言と仕事への活かし方」の
+投稿本文と、それに添えるイラスト画像用の英語プロンプトを生成する。画像は
+OpenAI の gpt-image-1 で生成し、images/queue/ に保存してリポジトリに
+コミット＆プッシュし、テキストと画像プレビューを載せた GitHub Issue を
+作成する。
 """
 
-import io
+import base64
 import json
 import os
-import random
 import re
 import subprocess
 import sys
-import tempfile
-import urllib.parse
 import uuid
 from datetime import datetime, timezone, timedelta
 
 import requests
 from google import genai
 from google.genai import types
-from PIL import Image, ImageDraw, ImageFilter, ImageFont, ImageOps
 
+# 最優先で使用するテキスト生成モデル。
+PREFERRED_TEXT_MODEL = "gemini-3.6-flash"
 # API が動的なモデル一覧取得に失敗した場合にのみ使う最終フォールバック。
 # （通常は client.models.list() で取得した現行モデルが優先される）
 STATIC_TEXT_MODEL_FALLBACKS = [
+    "gemini-3.6-flash",
     "gemini-2.0-flash",
     "gemini-1.5-flash",
     "gemini-1.5-pro",
@@ -34,21 +34,45 @@ STATIC_TEXT_MODEL_FALLBACKS = [
 ]
 # テキスト生成モデルの一覧から除外する（generateContent はサポートするが
 # 用途が異なる）モデル名の断片。
-TEXT_MODEL_EXCLUDE = ("imagen", "embedding", "aqa", "-image")
+# "deep-research-*" や "antigravity-*" 等の一部プレビューモデルは
+# supported_actions に generateContent を含みつつも実際には通常の
+# generateContent 呼び出しに対応していない（Interactions API専用等）ため、
+# 数値バージョンによる自動ソートだけに頼らず明示的に除外する。
+TEXT_MODEL_EXCLUDE = (
+    "imagen",
+    "embedding",
+    "aqa",
+    "-image",
+    "deep-research",
+    "antigravity",
+    "lyria",
+    "-tts",
+    "computer-use",
+    "-robotics-",
+    "gemma-",
+)
+
+# 画像生成モデル（OpenAI）。DALL-E 3 はAPI側で廃止されたため、後継の
+# gpt-image-1 を使用する。gpt-image-1 は response_format パラメータを
+# 受け付けず、常に b64_json を返す。
+OPENAI_IMAGE_MODEL = "gpt-image-1"
+OPENAI_IMAGE_SIZE = "1024x1024"
+OPENAI_IMAGE_QUALITY = "high"
 
 JST = timezone(timedelta(hours=9))
 
 # 曜日ごとの投稿テーマ（datetime.weekday(): 月=0 ... 日=6）。
 # 日本時間（JST）基準で当日の曜日を判定し、Gemini への生成プロンプトに
 # その日のテーマを明示的に注入することで、投稿内容を曜日ごとに切り替える。
+# コンセプト: 社会人に響く偉人・アスリートの名言と、仕事への活かし方。
 WEEKDAY_THEMES = {
-    0: "新人社会人・若手社員に関する本音・あるある・理不尽",
-    1: "政治・社会制度・税金・世論に対する庶民の本音・チクリとした風刺",
-    2: "ベテラン社員・管理職・おじさん世代の哀愁や本音・社内政治",
-    3: "世間で話題になっている時事ニュース・トレンド・社会現象に関する本音",
-    4: "新人社員・若手の週末直前の本音・解放感・ギャップ",
-    5: "独身男性のリアルな日常・休日・生態・孤独と自由",
-    6: "独身女性のリアルな休日・本音・日常のモヤモヤ・月曜前の心理",
+    0: "挑戦・スタート（アスリート・冒険家の名言）",
+    1: "集中・習慣（職人・ストイックな選手の名言）",
+    2: "チームワーク・対話（名監督・リーダーの名言）",
+    3: "逆境・失敗からの再起（発明家・偉人の名言）",
+    4: "達成・自分を労う言葉（哲学者・表現者の名言）",
+    5: "休息・思考の余白（文豪・自然科学者の名言）",
+    6: "休息・思考の余白（文豪・自然科学者の名言）",
 }
 
 
@@ -57,225 +81,88 @@ def get_today_theme(now: datetime | None = None) -> str:
     now = now or datetime.now(JST)
     return WEEKDAY_THEMES[now.weekday()]
 
-# --- テキストカード描画設定（日常風景ムード + ポスター風レイアウト） ---
-CARD_WIDTH = 1200
-CARD_HEIGHT = 1200
-CARD_TEXT_MARGIN = 110
-# 背景の上に重ねる暗いフィルター（0-255、テキストの視認性を確保するため。約65%）。
-CARD_OVERLAY_OPACITY = 165
-# 行ごとのジャンプ率（サイズ差）と配色のメリハリ設定。
-# 振り（normal）は控えめなオフホワイト、落とし（large/accent）は墨に映える
-# 山吹金。素の白(#FFFFFF)/ビビッドイエロー(#FFE600)より、筆文字カードとして
-# 落ち着きと重厚感が出る配色に調整している。
-CARD_COLOR_WHITE = (240, 240, 240)  # #F0F0F0
-CARD_COLOR_ACCENT = (255, 215, 0)  # #FFD700 山吹金
-CARD_COLOR_INK = (18, 14, 12)  # 毛筆の縁取り・影に使う墨色
-CARD_FONT_SIZE_NORMAL = 68
-CARD_FONT_SIZE_LARGE = 150
-CARD_MAX_LINES = 2  # card_lines は必ず「振り」「落とし」の2行構成にするための安全上限
-CARD_LINE_SPACING_RATIO = 0.35
-CARD_MIN_SCALE = 0.4  # 収まらない場合に縮小する下限
 
-# --- 背景写真（写真APIが失敗した場合は必ずローカル生成にフォールバックする） ---
-# Unsplash Source (source.unsplash.com) は 2025 年に廃止されサービスが
-# 停止しているため使用しない。代わりに、既にこのプロジェクトで実績のある
-# Pollinations（APIキー不要）から写真的な背景画像を試みに取得する。
-POLLINATIONS_BASE_URL = "https://image.pollinations.ai/prompt"
-PHOTO_BACKGROUND_MODEL = "flux"
-PHOTO_BACKGROUND_RETRIES = 2
-PHOTO_BACKGROUND_KEYWORDS = [
-    "nature landscape",
-    "city skyline",
-    "sky and clouds",
-    "quiet street",
-    "coffee shop window",
-    "sunset",
-    "rainy window",
-    "morning light",
-]
+PERSONA_PROMPT_HEADER = """あなたはX（旧Twitter）アカウント「声なき多数派」(@koenidashiteko) の
+中の人です。このアカウントは、日々の激務に追われる社会人に向けて、偉人・
+アスリート・リーダーたちの名言と、それを「明日からの仕事にどう活かすか」
+を短く深く伝える投稿を1つ作成します。説教くさい自己啓発臭は避け、忙しい
+社会人の心に静かに刺さる、洗練された一言にすること。
 
-# 写真背景の取得に失敗した場合の最終フォールバック。外部の写真API（Unsplash等）
-# には依存せず、Pillow だけで完結する日常のムードを表現する。ネットワーク
-# 不要・APIキー不要で確実に動作させるため。
-CARD_MOOD_THEMES = [
-    {  # 夕暮れの街
-        "name": "dusk_skyline",
-        "sky_top": (255, 158, 92),
-        "sky_bottom": (43, 27, 74),
-        "silhouette": (18, 13, 26),
-    },
-    {  # オフィスの窓
-        "name": "office_window",
-        "sky_top": (68, 90, 122),
-        "sky_bottom": (18, 24, 36),
-        "silhouette": None,
-    },
-    {  # 雨の日の交差点
-        "name": "rainy_crossing",
-        "sky_top": (46, 58, 78),
-        "sky_bottom": (12, 16, 24),
-        "silhouette": None,
-    },
-    {  # 早朝の空
-        "name": "early_morning",
-        "sky_top": (255, 226, 214),
-        "sky_bottom": (140, 172, 210),
-        "silhouette": (54, 64, 84),
-    },
-]
+投稿本文（text）は、以下の2要素をこの順につなげ、1つの自然な文章として
+完結させること。
+1. 名言そのもの（発言者名を明記すること）。
+2. その名言を現代の社会人の仕事・働き方にどう活かせるかを説く、短く
+   鋭い解説（長い状況説明やポエム調は禁止。一言一言の言葉の切れ味を
+   最優先にすること）。
+名言と解説の間には改行を1つ入れ、読み手が一拍置いて意味を噛みしめる
+間（ま）を作ること。
 
-# apt-get install fonts-noto-cjk（Ubuntu/GitHub Actions）で入る標準パスを優先し、
-# 環境によって異なる ipaexfont のパッケージ配置や、ローカル Windows での動作
-# 確認用に使えるフォントもフォールバックとして並べている。
-CJK_FONT_CANDIDATES = [
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Bold.ttc",
-    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
-    "/usr/share/fonts/opentype/ipaexfont-gothic/ipaexg.ttf",
-    "/usr/share/fonts/truetype/fonts-japanese-gothic.ttf",
-    "/usr/share/fonts/truetype/ipa-gothic/ipag.ttf",
-    "C:/Windows/Fonts/YuGothB.ttc",
-    "C:/Windows/Fonts/meiryob.ttc",
-    "C:/Windows/Fonts/msgothic.ttc",
-]
-
-# --- ハイブリッドタイポグラフィ用フォント（行の役割ごとに固定で使い分ける） ---
-# 「振り」の行（size="normal"）には端正な明朝体、「落とし」の行
-# （size="large"、オチ・キラーフレーズ）には迫力ある毛筆体を使う。
-#
-# 「衡山毛筆フォント（KouzanBrushFont）」はGoogle Fontsに実在せず、配布元が
-# CIから安定してダウンロードできる保証がない（このプロジェクトでは以前
-# 「怨霊フォント」でも同様の理由で採用を見送っている）ため使用しない。
-# 代わりに、いずれも https://github.com/google/fonts (raw.githubusercontent.com)
-# から実際にダウンロード可能なことを確認済みの実在フォントのみを使用する。
-CARD_FONT_URLS_NORMAL = [
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/shipporimincho/ShipporiMincho-Bold.ttf",
-]
-CARD_FONT_URLS_BRUSH = [
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/yujiboku/YujiBoku-Regular.ttf",
-    "https://raw.githubusercontent.com/google/fonts/main/ofl/reggaeone/ReggaeOne-Regular.ttf",
-]
-
-PERSONA_PROMPT_HEADER = """あなたはX（旧Twitter）の匿名アカウント「声なき多数派」(@koenidashiteko) の
-中の人です。「本音を言えない世の中の代弁者」として、世の中の様々な立場の
-人が0.5秒で「わかる」と刺さる、超短文・インパクト重視の投稿を1つ
-作成してください。難しい時事問題や組織論、長い状況説明やポエム調は
-完全に禁止です。言葉を極限まで研ぎ澄ませること。
-
-投稿は「tweet_intro（導線テキスト）」と「card_lines（画像カードの2行
-メッセージ）」による“2段構えのフック構造”で1つの物語を完成させます。
-tweet_intro・card_lines 1行目（振り）・card_lines 2行目（落とし）の
-3つは、別々の小ネタではなく、同じ1つのシチュエーションが時系列で
-そのままつながる「ひと続きの文章」として設計すること。
-
-- tweet_intro: 画像を見る前の「引き・前フリ・シチュエーション提示」。
-  これ単体でも「気になる」と思わせつつ、答え（オチ）そのものは明かさない。
-- card_lines 1行目（振り）: tweet_intro の続きとして自然に読める、
-  具体的な日常のワンシーン。
-- card_lines 2行目（落とし）: 「振り」を受けて着地する、強烈な本音・
-  オチ。筆文字で強調する最重要キラーフレーズ。
-
-読者が tweet_intro → card_lines 1行目 → card_lines 2行目の順に読んだ
-とき、違和感なく1本の話として繋がり、最後の一言で「それな」「わかり
-すぎる」とクスッと笑える・深く共感できる構成にすること。状況説明を
-だらだら書かず、一言一言の言葉の切れ味を最優先にすること。
+あわせて、この投稿に添えるイラスト画像用の英語プロンプト（image_prompt）
+も作成すること。画像生成モデルは正確な文字を描画できないため、画像には
+文字・テキスト・ロゴ・サイン等を一切含めないこと。名言の世界観・情景を
+象徴する、洗練されたシネマティックイラストまたは高品質な3Dアート調の
+ビジュアルにすること。
 """
 
 
 def _build_theme_section(theme: str) -> str:
     """本日のテーマ（曜日別）を明示的に注入するプロンプト断片を作る。"""
     return (
-        "# 本日のテーマ（最優先で厳守すること。他の曜日向けの話題や、"
+        "# 本日のテーマ（最優先で厳守すること。他の曜日向けの人物像や、"
         "このテーマから外れる題材は選ばないこと）\n"
         f"本日のテーマ: {theme}\n\n"
-        "このテーマに基づき、声に出せないリアルな本音・不条理・共感の瞬間を、"
-        "1行目の振り（日常の状況）と2行目の落とし（強烈な本音・オチ）の"
-        "超短文構成で作成してください。\n"
+        "このテーマに沿った人物（偉人・アスリート・リーダー等）の実在する"
+        "名言を1つ選び、その名言と、現代の社会人への活かし方を短く伝える"
+        "投稿を作成してください。\n"
     )
 
 
 PERSONA_PROMPT_RULES = """# 投稿のルール
-- 説教くささ・小難しさはゼロにすること。ユーモア全開の「心の叫び・愛嬌のある
-  ぼやき」にすること。ネガティブすぎず、「それな」「わかりすぎる」と思わず
-  クスッと笑えるようにすること。
+- 名言は実在の人物の発言として広く知られているものを使うこと。発言者名を
+  必ず明記すること（例:「〜」――イチロー）。捏造・出典不明な名言や、
+  発言者を誤って表記することは禁止。
+- 解説部分は説教くささをゼロにし、短く鋭い一言にすること。「わかる」
+  「刺さる」「今日から意識したい」と思わせる余韻を残すこと。
 - 絵文字やハッシュタグは使わないこと。
-
-## tweet_intro（導線テキスト）のルール
-- **15〜25文字以内**の短いフレーズにすること（スクロールの手を止める引き）。
-- 画像のオチ・答えそのものは明かさず、あくまで「シチュエーション提示・
-  前フリ・引き」に徹すること。これ単体を読んだだけでも「気になる」
-  「続きが見たい」と思わせること。
-- card_lines 1行目（振り）へ自然に続く「入口」になっていること。唐突に
-  無関係な感想を述べるのではなく、時系列・文脈が地続きであること。
 - フォロワーへのアンケート・「〜ですよね？」のような質問形式は禁止。
-- （例）「入社初日、この言葉を信じた結果。」「休日の朝、スマホを見た瞬間に
-  すべてを察した。」「給料明細を見た全社員の共通認識。」
+- text は名言＋解説を合わせて60〜100文字程度を目安にし、Xの文字数制限
+  内に自然に収まる長さにすること。
+- 機械的な文字数折り返しは禁止し、必ず「文節（意味のまとまり）」で改行
+  すること。単語や複合語の途中で改行してはいけません。
 
-## card_lines（画像カード）のルール
-card_lines は必ず**ちょうど2行**の配列で、tweet_intro の直接の続きとして
-以下の役割分担にすること。
-- 1行目（振り）: tweet_intro から自然につながる、具体的な日常のワン
-  シーン（体言止め・「、」止めの短句）。
-- 2行目（落とし）: 「振り」を受けて着地する、強烈な本音・オチ。筆文字で
-  強調する最重要キラーフレーズ。
+## image_prompt（画像生成プロンプト）のルール
+- 英語で、gpt-image-1向けに具体的かつ簡潔に記述すること。
+- 名言の世界観・情景を象徴する、洗練されたシネマティックイラストまたは
+  高品質な3Dアートのビジュアルにすること（例: cinematic digital
+  illustration, elegant 3D render, dramatic lighting, sophisticated
+  color grading）。安っぽいクリップアート調やステレオタイプな「成功哲学
+  系」の画像は避けること。
+- 文字・テキスト・ロゴ・サイン・タイポグラフィを一切含めないよう必ず
+  明示すること（例: "no text, no typography, no logos, no signature,
+  no writing of any kind"）。
 
-tweet_intro → 1行目 → 2行目の順に通しで読んだとき、1本の自然な文章と
-して成立すること（例:「給料明細を見た全社員の共通認識。」→「給料日の
-3日後、」→「残高が初期化される。」）。長い説明文は厳禁、体言止め中心の
-言い切りキラーフレーズにすること。機械的な文字数折り返しは禁止し、必ず
-「文節（意味のまとまり）」ごとに改行してください。単語や複合語の途中で
-切ってはいけません。
-
-各行は以下のオブジェクトです:
-- text: その行の文字列（文節単位）
-- size: "normal"（1行目・振り）または "large"（2行目・落とし）
-- color: "white"（1行目・振り）または "accent"（2行目・落とし）
-
-1行目は必ず size="normal", color="white"、2行目は必ず size="large",
-color="accent" にすること。
-
-# 参考例（tweet_intro → card_lines がひと続きの物語になる連動イメージ。
-文体・フォーマットのみの参考。実際の内容は必ず本日のテーマに沿った
-ものにすること）
-tweet_intro:「給料明細を見た全社員の共通認識。」
-card_lines:
-  [
-    {"text": "給料日の3日後、", "size": "normal", "color": "white"},
-    {"text": "残高が初期化される。", "size": "large", "color": "accent"}
-  ]
-
-tweet_intro:「入社初日、この言葉を信じた結果。」
-card_lines:
-  [
-    {"text": "「何でも聞いてね」の3分後、", "size": "normal", "color": "white"},
-    {"text": "待っていた門前払い。", "size": "large", "color": "accent"}
-  ]
-
-tweet_intro:「休日の朝、スマホを見た瞬間にすべてを察した。」
-card_lines:
-  [
-    {"text": "「明日休み？」という通知、", "size": "normal", "color": "white"},
-    {"text": "出勤確定宣告。", "size": "large", "color": "accent"}
-  ]
-
-tweet_intro:「この時間だけは誰にも邪魔されたくない。」
-card_lines:
-  [
-    {"text": "鳴り響く電話、", "size": "normal", "color": "white"},
-    {"text": "始まる心理戦。", "size": "large", "color": "accent"}
-  ]
+# 参考例（文体・フォーマットのみの参考。実際の内容は必ず本日のテーマに
+沿ったものにすること）
+{
+  "text": "「準備とは、勝つ前から勝っていることだ」――ラグビー元日本代表HC エディー・ジョーンズ\\n明日の会議の結果は、今夜のあなたの机の上に、もう決まっている。",
+  "image_prompt": "A single desk lamp illuminating a neatly organized desk late at night, papers and a notebook laid out with quiet determination, elegant cinematic 3D render, dramatic warm and cool lighting contrast, minimalist and sophisticated mood, no text, no typography, no logos, no signature, no writing of any kind"
+}
+{
+  "text": "「失敗とは、より賢く再挑戦するための機会にすぎない」――発明家 トーマス・エジソン\\n今日のミスは経歴の傷ではなく、次の設計図の下書きだ。",
+  "image_prompt": "A cracked lightbulb glowing softly beside a sketchbook full of technical drawings on a wooden workbench, warm golden light, elegant cinematic digital illustration, sense of quiet resilience and craftsmanship, no text, no typography, no logos, no signature, no writing of any kind"
+}
+{
+  "text": "「明日死ぬかのように生きよ。永遠に生きるかのように学べ」――ガンジー\\n定時後の30分を、今日の消化ではなく明日への投資に変えてみる。",
+  "image_prompt": "An open book and a cup of tea on a quiet windowsill at dusk, soft cinematic lighting, elegant minimalist 3D render style, contemplative and serene atmosphere, no text, no typography, no logos, no signature, no writing of any kind"
+}
 
 # 出力形式
 以下のキーのみを持つ JSON オブジェクトを1つだけ出力してください。
 説明文やマークダウンのコードフェンスは付けないこと。
 
 {
-  "tweet_intro": "生成した導線テキスト（15〜25文字以内、日本語）",
-  "card_lines": [
-    {"text": "1行目（振り）", "size": "normal", "color": "white"},
-    {"text": "2行目（落とし）", "size": "large", "color": "accent"}
-  ]
+  "text": "生成した投稿本文（名言＋発言者→改行→現代社会人への解説、日本語）",
+  "image_prompt": "生成した画像プロンプト（英語）"
 }
 """
 
@@ -342,32 +229,25 @@ def _dedupe(names: list[str]) -> list[str]:
 
 
 def build_text_model_candidates(client: genai.Client) -> list[str]:
+    """PREFERRED_TEXT_MODELを必ず最優先で試し、それが失敗した場合のみ
+    動的発見・静的フォールバックの順で他モデルにフォールバックする。
+
+    モデル名に含まれる数値（日付やプレビュー版番号等）だけで新しい順に
+    ソートすると、"deep-research-pro-preview-12-2025" のような無関係な
+    プレビューモデルが本来使いたい安定版より上位に来てしまうことがある
+    ため、優先モデルを明示的に固定する。
+    """
     discovered = discover_models(client, action="generateContent")
     discovered = [
         name
         for name in discovered
         if not any(excluded in name for excluded in TEXT_MODEL_EXCLUDE)
     ]
-    return _dedupe(discovered + STATIC_TEXT_MODEL_FALLBACKS)
-
-
-def _normalize_card_lines(raw_lines: list) -> list[dict]:
-    normalized = []
-    for item in raw_lines:
-        text = str(item.get("text", "")).strip()
-        if not text:
-            continue
-        size = item.get("size") if item.get("size") in ("normal", "large") else "normal"
-        color = item.get("color") if item.get("color") in ("white", "accent") else "white"
-        normalized.append({"text": text, "size": size, "color": color})
-    if not normalized:
-        raise ValueError("card_lines が空、または有効な行がありませんでした")
-    # 超短文構成のため、行数が想定を超えて返ってきた場合の安全上限。
-    return normalized[:CARD_MAX_LINES]
+    return _dedupe([PREFERRED_TEXT_MODEL] + discovered + STATIC_TEXT_MODEL_FALLBACKS)
 
 
 def generate_draft_texts(client: genai.Client) -> dict:
-    """tweet_intro（投稿本文＝導入）と card_lines（画像カードの構造化された核心）を生成する。
+    """投稿本文（text）と画像生成プロンプト（image_prompt）を生成する。
 
     日本時間（JST）基準の当日の曜日から曜日別テーマを決定し、生成プロンプトに
     明示的に注入することで、投稿内容を曜日ごとに切り替える。
@@ -399,411 +279,50 @@ def generate_draft_texts(client: genai.Client) -> dict:
         raw = re.sub(r"^```(?:json)?|```$", "", raw, flags=re.MULTILINE).strip()
         data = json.loads(raw)
 
-        tweet_intro = data["tweet_intro"].strip()
-        card_lines = _normalize_card_lines(data["card_lines"])
-        if not tweet_intro:
+        text = str(data["text"]).strip()
+        image_prompt = str(data["image_prompt"]).strip()
+        if not text or not image_prompt:
             raise ValueError(f"Gemini から空の値が返されました: {data!r}")
 
         print(f"[text] モデル '{model}' でテキストを生成しました。")
-        return {"tweet_intro": tweet_intro, "card_lines": card_lines}
+        return {"text": text, "image_prompt": image_prompt}
 
     raise RuntimeError(
         f"すべてのテキスト生成モデル候補 {candidates} で失敗しました"
     ) from last_error
 
 
-def _find_cjk_font_path() -> str:
-    for path in CJK_FONT_CANDIDATES:
-        if os.path.exists(path):
-            return path
-    raise RuntimeError(
-        "日本語フォントが見つかりません。GitHub Actions では "
-        "`apt-get install fonts-noto-cjk` 等でインストールしてください。"
-        f"探索したパス: {CJK_FONT_CANDIDATES}"
-    )
+def build_openai_client():
+    from openai import OpenAI
+
+    api_key = os.environ["OPENAI_API_KEY"]
+    return OpenAI(api_key=api_key)
 
 
-def _download_font(url: str) -> str | None:
-    """フォントファイルをダウンロードし、ローカルパスを返す（失敗時は None）。
-
-    同じ実行内で再利用できるよう一時ディレクトリにキャッシュする。
-    """
-    cache_dir = os.path.join(tempfile.gettempdir(), "koenidashiteko_fonts")
-    os.makedirs(cache_dir, exist_ok=True)
-    dest = os.path.join(cache_dir, url.rsplit("/", 1)[-1])
-
-    if os.path.exists(dest) and os.path.getsize(dest) > 0:
-        return dest
+def generate_image(image_prompt: str) -> bytes:
+    """OpenAI gpt-image-1 で画像を生成し、PNGバイト列を返す。"""
+    client = build_openai_client()
 
     try:
-        response = requests.get(url, timeout=15)
-        response.raise_for_status()
-        if not response.content:
-            raise RuntimeError("空のレスポンスでした")
-        with open(dest, "wb") as f:
-            f.write(response.content)
-        return dest
+        response = client.images.generate(
+            model=OPENAI_IMAGE_MODEL,
+            prompt=image_prompt,
+            size=OPENAI_IMAGE_SIZE,
+            quality=OPENAI_IMAGE_QUALITY,
+            n=1,
+        )
     except Exception as exc:  # noqa: BLE001
-        print(f"[font] フォントのダウンロードに失敗しました ({url}): {exc}", file=sys.stderr)
-        return None
+        raise RuntimeError(f"OpenAI画像生成に失敗しました: {exc}") from exc
 
+    if not response.data:
+        raise RuntimeError("OpenAIから画像データが返されませんでした。")
 
-def _resolve_font_path(role: str, urls: list[str]) -> str:
-    """指定ロール（normal/brush）のフォントパスを返す。ダウンロード失敗時は
-    ゴシックにフォールバックするため、この関数が例外を送出することはない
-    （フォント取得はあくまで見た目の演出であり、カード生成自体は
-    絶対に止めないため）。
-    """
-    shuffled = list(urls)
-    random.shuffle(shuffled)
-    for url in shuffled:
-        path = _download_font(url)
-        if path:
-            return path
-    if shuffled:
-        print(
-            f"[font] ロール '{role}' のフォント取得にすべて失敗したため、"
-            "ゴシック体にフォールバックします。",
-            file=sys.stderr,
-        )
-    return _find_cjk_font_path()
+    b64_data = response.data[0].b64_json
+    if not b64_data:
+        raise RuntimeError("OpenAIのレスポンスにb64_jsonが含まれていません。")
 
-
-def _make_vertical_gradient(
-    width: int, height: int, color_top: tuple, color_bottom: tuple
-) -> Image.Image:
-    base = Image.new("RGB", (width, height), color_top)
-    overlay = Image.new("RGB", (width, height), color_bottom)
-    mask = Image.new("L", (width, height))
-    mask.putdata([int(255 * (y / height)) for y in range(height) for _ in range(width)])
-    return Image.composite(overlay, base, mask)
-
-
-def _draw_skyline_silhouette(image: Image.Image, color: tuple) -> None:
-    """夕暮れ・早朝テーマ向けに、下部にビル群のシルエットを描く。"""
-    width, height = image.size
-    draw = ImageDraw.Draw(image)
-    base_y = int(height * 0.74)
-    x = 0
-    while x < width:
-        block_width = random.randint(70, 160)
-        block_height = random.randint(int(height * 0.06), int(height * 0.24))
-        draw.rectangle(
-            [x, base_y - block_height, x + block_width, height], fill=(*color, 255)
-        )
-        x += block_width + random.randint(4, 16)
-
-
-def _draw_window_grid(image: Image.Image) -> None:
-    """オフィスの窓テーマ向けに、ぼんやり灯る窓明かりのグリッドを描く。"""
-    width, height = image.size
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    cols, rows = 8, 10
-    cell_w, cell_h = width / cols, height / rows
-    for row in range(rows):
-        for col in range(cols):
-            if random.random() < 0.4:
-                left = col * cell_w + cell_w * 0.15
-                top = row * cell_h + cell_h * 0.15
-                right = left + cell_w * 0.7
-                bottom = top + cell_h * 0.7
-                alpha = random.randint(10, 35)
-                draw.rectangle([left, top, right, bottom], fill=(255, 238, 200, alpha))
-    image.alpha_composite(overlay)
-
-
-def _draw_rain_streaks(image: Image.Image) -> None:
-    """雨の日テーマ向けに、細い雨粒の筋を散らす。"""
-    width, height = image.size
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    for _ in range(140):
-        x = random.randint(0, width)
-        y = random.randint(0, height)
-        length = random.randint(30, 90)
-        alpha = random.randint(15, 45)
-        draw.line(
-            [(x, y), (x - int(length * 0.2), y + length)],
-            fill=(205, 218, 232, alpha),
-            width=2,
-        )
-    image.alpha_composite(overlay)
-
-
-def _draw_bokeh_lights(image: Image.Image) -> None:
-    """雨の日テーマ向けに、街灯の淡いにじみ（ボケ光）を加える。"""
-    width, height = image.size
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    colors = [(255, 200, 120), (255, 150, 150), (150, 200, 255)]
-    for _ in range(6):
-        cx = random.randint(0, width)
-        cy = random.randint(int(height * 0.6), height)
-        r = random.randint(30, 70)
-        color = random.choice(colors)
-        draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(*color, 90))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(24))
-    image.alpha_composite(overlay)
-
-
-def _draw_horizon_glow(image: Image.Image) -> None:
-    """早朝テーマ向けに、地平線あたりに柔らかい光の滲みを加える。"""
-    width, height = image.size
-    overlay = Image.new("RGBA", image.size, (0, 0, 0, 0))
-    draw = ImageDraw.Draw(overlay)
-    cx, cy = width / 2, int(height * 0.62)
-    r = int(width * 0.32)
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=(255, 246, 224, 110))
-    overlay = overlay.filter(ImageFilter.GaussianBlur(40))
-    image.alpha_composite(overlay)
-
-
-def _fetch_photo_background(width: int, height: int) -> Image.Image:
-    """Pollinations から日常の雰囲気を感じさせる写真的な背景画像を取得する。
-
-    失敗した場合は例外を送出する。呼び出し元は必ず `_make_scenic_background`
-    へフォールバックすること（写真取得はあくまで演出であり、これが失敗しても
-    カード生成自体は絶対に止めないため）。
-    """
-    keyword = random.choice(PHOTO_BACKGROUND_KEYWORDS)
-    prompt = (
-        f"{keyword}, atmospheric everyday life photography, cinematic natural "
-        f"lighting, high detail, photorealistic"
-    )
-    encoded_prompt = urllib.parse.quote(prompt, safe="")
-
-    last_error: Exception | None = None
-    for attempt in range(1, PHOTO_BACKGROUND_RETRIES + 1):
-        seed = random.randint(0, 2**31 - 1)
-        url = (
-            f"{POLLINATIONS_BASE_URL}/{encoded_prompt}"
-            f"?width={width}&height={height}&model={PHOTO_BACKGROUND_MODEL}"
-            f"&nologo=true&seed={seed}"
-        )
-        try:
-            response = requests.get(url, timeout=20)
-            response.raise_for_status()
-            content_type = response.headers.get("Content-Type", "")
-            if not content_type.startswith("image/") or not response.content:
-                raise RuntimeError(
-                    f"画像以外のレスポンスでした (Content-Type: {content_type!r})"
-                )
-            photo = Image.open(io.BytesIO(response.content)).convert("RGBA")
-            if photo.size != (width, height):
-                photo = ImageOps.fit(photo, (width, height))
-            print(f"[background] 写真背景を取得しました（keyword={keyword!r}）。")
-            return photo
-        except Exception as exc:  # noqa: BLE001
-            print(
-                f"[background] 写真背景の取得に失敗しました "
-                f"(試行 {attempt}/{PHOTO_BACKGROUND_RETRIES}): {exc}",
-                file=sys.stderr,
-            )
-            last_error = exc
-
-    raise RuntimeError("写真背景の取得にすべて失敗しました") from last_error
-
-
-def _make_scenic_background(width: int, height: int) -> Image.Image:
-    """日常のワンシーンを感じさせるムード背景を、写真APIなしで手続き的に生成する。"""
-    theme = random.choice(CARD_MOOD_THEMES)
-    image = _make_vertical_gradient(
-        width, height, theme["sky_top"], theme["sky_bottom"]
-    ).convert("RGBA")
-
-    if theme["name"] == "dusk_skyline":
-        _draw_skyline_silhouette(image, theme["silhouette"])
-    elif theme["name"] == "office_window":
-        _draw_window_grid(image)
-    elif theme["name"] == "rainy_crossing":
-        _draw_rain_streaks(image)
-        _draw_bokeh_lights(image)
-    elif theme["name"] == "early_morning":
-        _draw_horizon_glow(image)
-        _draw_skyline_silhouette(image, theme["silhouette"])
-
-    return image
-
-
-def _resolve_line_style(line: dict) -> tuple[int, tuple, bool]:
-    """行の役割（振り/落とし）から、フォントサイズ・色・毛筆ロールかどうかを返す。
-
-    「落とし」の行（size="large"、オチ・キラーフレーズ）だけを毛筆体・金色の
-    特大サイズにし、それ以外の「振り」の行は明朝体・オフホワイトの通常
-    サイズにする、というハイブリッドタイポグラフィのルールの中枢。
-    """
-    is_brush = line["size"] == "large"
-    font_size = CARD_FONT_SIZE_LARGE if is_brush else CARD_FONT_SIZE_NORMAL
-    color = CARD_COLOR_ACCENT if line["color"] == "accent" else CARD_COLOR_WHITE
-    return font_size, color, is_brush
-
-
-def _layout_card_lines(
-    card_lines: list[dict], normal_font_path: str, brush_font_path: str, scale: float
-) -> tuple[list[dict], int, int, int]:
-    """指定スケールで各行を計測し、(描画情報リスト, 最大幅, 合計高さ, 行間) を返す。
-
-    行の高さは textbbox の見た目上のバウンディングボックスではなく
-    `font.getmetrics()` の ascent/descent を基準にする。毛筆フォントは
-    デザイン上の内部余白（サイドベアリング）が明朝体と大きく異なるため、
-    bbox基準だと振り・落とし間の行間が不揃いに見えてしまうのを防ぐため。
-    """
-    rendered = []
-    for line in card_lines:
-        base_size, color, is_brush = _resolve_line_style(line)
-        font_path = brush_font_path if is_brush else normal_font_path
-        font_size = max(16, int(base_size * scale))
-        font = ImageFont.truetype(font_path, font_size)
-        ascent, descent = font.getmetrics()
-        left, top, right, bottom = font.getbbox(line["text"])
-        width = right - left
-        rendered.append(
-            {
-                "text": line["text"],
-                "font": font,
-                "color": color,
-                "is_brush": is_brush,
-                "width": width,
-                "ascent": ascent,
-                "descent": descent,
-            }
-        )
-
-    max_width = max((r["width"] for r in rendered), default=0)
-    # 行間の基準は「振り」の行の行高にする。毛筆フォントは行高が
-    # 大きく振れがちで、それを基準にすると行間が間延びするため。
-    normal_heights = [r["ascent"] + r["descent"] for r in rendered if not r["is_brush"]]
-    all_heights = [r["ascent"] + r["descent"] for r in rendered]
-    base_line_height = max(normal_heights or all_heights, default=0)
-    line_spacing = int(base_line_height * CARD_LINE_SPACING_RATIO)
-    total_height = sum(all_heights) + line_spacing * (len(rendered) - 1)
-    return rendered, max_width, total_height, line_spacing
-
-
-def _add_center_bottom_vignette(image: Image.Image) -> Image.Image:
-    """毛筆文字の可読性を極限まで高めるため、カード中央〜下部に向かって
-    暗くなる黒グラデーション（ヴィネット）を重ねる。"""
-    width, height = image.size
-    start = 0.28  # この高さ比率より上は暗くしない
-    max_alpha = 200
-    alpha_row = []
-    for y in range(height):
-        t = max(0.0, (y / height - start) / (1 - start))
-        alpha_row.append(int(max_alpha * (t**1.3)))
-
-    vignette = Image.new("RGBA", (width, height), (0, 0, 0, 0))
-    vignette.putdata(
-        [(0, 0, 0, alpha_row[y]) for y in range(height) for _ in range(width)]
-    )
-    return Image.alpha_composite(image, vignette)
-
-
-def _draw_card_line(image: Image.Image, line: dict, x: float, baseline_y: float) -> None:
-    """1行分のテキストを描画する。
-
-    振りの行: 控えめな黒のドロップシャドウ＋オフホワイトの本文。
-    落としの行（毛筆）: 墨がにじむような多重の柔らかい影＋太めの黒縁取り＋
-    山吹金の本文で、写真から浮き上がるようなインパクトを出す。
-    どちらも anchor="ms"（水平中央・垂直ベースライン）で描画するため、
-    フォントが異なっても各行のベースラインが揃った状態で積み上げられる。
-    """
-    text, font, color = line["text"], line["font"], line["color"]
-
-    if line["is_brush"]:
-        stroke_width = max(4, font.size // 16)
-
-        # 1) 墨のにじみのような、ぼかした多重シャドウで奥行きを出す。
-        glow = Image.new("RGBA", image.size, (0, 0, 0, 0))
-        glow_draw = ImageDraw.Draw(glow)
-        for dx, dy, alpha in ((0, font.size * 0.09, 130), (font.size * 0.03, font.size * 0.03, 90)):
-            glow_draw.text(
-                (x + dx, baseline_y + dy),
-                text,
-                font=font,
-                anchor="ms",
-                fill=(*CARD_COLOR_INK, alpha),
-                stroke_width=stroke_width,
-                stroke_fill=(*CARD_COLOR_INK, alpha),
-            )
-        glow = glow.filter(ImageFilter.GaussianBlur(max(6, font.size // 14)))
-        image.alpha_composite(glow)
-
-        # 2) 太めの黒縁取り＋山吹金の本文。
-        draw = ImageDraw.Draw(image)
-        draw.text(
-            (x, baseline_y),
-            text,
-            font=font,
-            anchor="ms",
-            fill=(*color, 255),
-            stroke_width=stroke_width,
-            stroke_fill=(*CARD_COLOR_INK, 255),
-        )
-    else:
-        draw = ImageDraw.Draw(image)
-        shadow_offset = max(2, font.size // 22)
-        draw.text(
-            (x + shadow_offset, baseline_y + shadow_offset),
-            text,
-            font=font,
-            anchor="ms",
-            fill=(0, 0, 0, 150),
-        )
-        draw.text((x, baseline_y), text, font=font, anchor="ms", fill=(*color, 255))
-
-
-def build_text_card(card_lines: list[dict]) -> bytes:
-    """card_lines を、日常風景ムードの背景に載せたポスター風カードとして描画する。
-
-    Gemini が意味のまとまり（文節）ごとに改行・強調指定した行をそのまま使い、
-    ここでは単語途中の再折り返しは行わない。行が余白に収まらない場合のみ、
-    行の区切りを保ったまま全体を比例縮小する安全策を取る。
-    """
-    normal_font_path = _resolve_font_path("normal", CARD_FONT_URLS_NORMAL)
-    brush_font_path = _resolve_font_path("brush", CARD_FONT_URLS_BRUSH)
-    print(f"[font] 振り(normal)フォント: {normal_font_path}")
-    print(f"[font] 落とし(brush)フォント: {brush_font_path}")
-
-    try:
-        image = _fetch_photo_background(CARD_WIDTH, CARD_HEIGHT)
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"[background] 写真背景を断念し、ローカル生成の背景にフォールバックします: {exc}",
-            file=sys.stderr,
-        )
-        image = _make_scenic_background(CARD_WIDTH, CARD_HEIGHT)
-
-    # 中央の文字がくっきり読めるよう、暗いフィルターを全体に重ねてコントラストを確保する。
-    dark_overlay = Image.new("RGBA", image.size, (0, 0, 0, CARD_OVERLAY_OPACITY))
-    image = Image.alpha_composite(image, dark_overlay)
-    # さらに中央〜下部にかけて暗くなるヴィネットを重ね、毛筆文字の可読性を高める。
-    image = _add_center_bottom_vignette(image)
-
-    max_block_width = CARD_WIDTH - CARD_TEXT_MARGIN * 2
-    max_block_height = CARD_HEIGHT - CARD_TEXT_MARGIN * 2
-
-    scale = 1.0
-    while True:
-        rendered, block_width, block_height, line_spacing = _layout_card_lines(
-            card_lines, normal_font_path, brush_font_path, scale
-        )
-        if block_width <= max_block_width and block_height <= max_block_height:
-            break
-        if scale <= CARD_MIN_SCALE:
-            break
-        scale -= 0.05
-
-    x_center = CARD_WIDTH / 2
-    y = (CARD_HEIGHT - block_height) / 2
-    for line in rendered:
-        baseline_y = y + line["ascent"]
-        _draw_card_line(image, line, x_center, baseline_y)
-        y += line["ascent"] + line["descent"] + line_spacing
-
-    output = io.BytesIO()
-    image.convert("RGB").save(output, format="PNG")
-    return output.getvalue()
+    print(f"[image] '{OPENAI_IMAGE_MODEL}' で画像を生成しました。")
+    return base64.b64decode(b64_data)
 
 
 def save_image(image_bytes: bytes) -> str:
@@ -832,29 +351,23 @@ def git_commit_and_push(paths: list[str], message: str) -> None:
     subprocess.run(["git", "push"], check=True)
 
 
-def create_issue(tweet_intro: str, card_lines: list[dict], image_path: str) -> dict:
+def create_issue(text: str, image_prompt: str, image_path: str) -> dict:
     repo = os.environ["GITHUB_REPOSITORY"]
     token = os.environ["GITHUB_TOKEN"]
     branch = os.environ.get("GITHUB_REF_NAME", "main")
 
     raw_image_url = f"https://raw.githubusercontent.com/{repo}/{branch}/{image_path}"
     # post_approved.py は meta["text"] をそのまま X の投稿本文として使う。
-    # card_lines は画像に焼き込み済みのため meta には含めない。
-    meta = json.dumps({"text": tweet_intro, "image_path": image_path}, ensure_ascii=False)
+    meta = json.dumps({"text": text, "image_path": image_path}, ensure_ascii=False)
 
-    card_preview = "\n".join(
-        f"> {'**' if line['size'] == 'large' else ''}{line['text']}"
-        f"{'**' if line['size'] == 'large' else ''}"
-        f"{'（accent）' if line['color'] == 'accent' else ''}"
-        for line in card_lines
-    )
+    text_preview = "\n".join(f"> {line}" for line in text.split("\n"))
 
     body = (
-        f"## 投稿テキスト（導入・フック）\n\n"
-        f"> {tweet_intro}\n\n"
-        f"## 画像カードメッセージ（本音の核心・行構成）\n\n"
-        f"{card_preview}\n\n"
-        f"## テキストカードプレビュー\n\n"
+        f"## 投稿テキスト\n\n"
+        f"{text_preview}\n\n"
+        f"## 画像プロンプト（English, gpt-image-1）\n\n"
+        f"> {image_prompt}\n\n"
+        f"## 画像プレビュー\n\n"
         f"![draft image]({raw_image_url})\n\n"
         f"---\n"
         f"このIssueに `approved` ラベルを付けると自動投稿されます。\n\n"
@@ -862,7 +375,8 @@ def create_issue(tweet_intro: str, card_lines: list[dict], image_path: str) -> d
     )
 
     now_jst = datetime.now(JST)
-    title = f"[下書き] {now_jst.strftime('%Y-%m-%d %H:%M')} JST - {tweet_intro[:20]}"
+    title_text = text.replace("\n", " ")
+    title = f"[下書き] {now_jst.strftime('%Y-%m-%d %H:%M')} JST - {title_text[:20]}"
 
     resp = requests.post(
         f"https://api.github.com/repos/{repo}/issues",
@@ -881,15 +395,15 @@ def main() -> None:
     client = build_gemini_client()
 
     draft = generate_draft_texts(client)
-    print(f"投稿テキスト（導入）: {draft['tweet_intro']}")
-    print(f"画像カード行構成（核心）: {draft['card_lines']}")
+    print(f"投稿本文: {draft['text']}")
+    print(f"画像プロンプト: {draft['image_prompt']}")
 
-    image_bytes = build_text_card(draft["card_lines"])
+    image_bytes = generate_image(draft["image_prompt"])
     image_path = save_image(image_bytes)
-    print(f"テキストカードを保存しました: {image_path}")
+    print(f"画像を保存しました: {image_path}")
     git_commit_and_push([image_path], f"chore: add draft image {os.path.basename(image_path)}")
 
-    issue = create_issue(draft["tweet_intro"], draft["card_lines"], image_path)
+    issue = create_issue(draft["text"], draft["image_prompt"], image_path)
     print(f"Issue を作成しました: {issue['html_url']}")
 
 
