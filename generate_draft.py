@@ -59,6 +59,25 @@ OPENAI_IMAGE_MODEL = "gpt-image-1"
 OPENAI_IMAGE_SIZE = "1024x1024"
 OPENAI_IMAGE_QUALITY = "high"
 
+# 文字描画・ロゴ混入に関する必須ガードレール文言。
+# プロンプト側でもGeminiに同一の文言を末尾へ付与するよう指示しているが、
+# LLMの指示追従に完全には依存できないため、コード側でも必ず末尾に付与
+# することを保証する（PERSONA_PROMPT_RULES内の指定文言と一致させること。
+# 一致していないと、LLMが既に付与済みでも重複して追記されてしまう）。
+IMAGE_PROMPT_SAFETY_SUFFIX = "no text, no typography, no logos, no signature"
+
+
+def _ensure_image_prompt_safety_suffix(image_prompt: str) -> str:
+    """IMAGE_PROMPT_SAFETY_SUFFIX が末尾に含まれることを保証する。
+
+    Geminiが既に同等の文言を出力していた場合は重複させず、そうでない
+    場合は必ず末尾に追記する。
+    """
+    normalized = image_prompt.rstrip().rstrip(".")
+    if IMAGE_PROMPT_SAFETY_SUFFIX in normalized:
+        return normalized
+    return f"{normalized}, {IMAGE_PROMPT_SAFETY_SUFFIX}"
+
 JST = timezone(timedelta(hours=9))
 
 # 曜日ごとの投稿テーマ（datetime.weekday(): 月=0 ... 日=6）。
@@ -98,10 +117,15 @@ PERSONA_PROMPT_HEADER = """あなたはX（旧Twitter）アカウント「声な
 間（ま）を作ること。
 
 あわせて、この投稿に添えるイラスト画像用の英語プロンプト（image_prompt）
-も作成すること。画像生成モデルは正確な文字を描画できないため、画像には
-文字・テキスト・ロゴ・サイン等を一切含めないこと。名言の世界観・情景を
-象徴する、洗練されたシネマティックイラストまたは高品質な3Dアート調の
-ビジュアルにすること。
+も作成すること。画像のスタイルは、これまでのミニマル・抽象的な3Dビジュアル
+（architectural blocksなど）ではなく、愛らしくユーモアがあり印象に残る
+「コミカルな3Dキャラクターイラストレーション」（claymation調・
+cartoonish）に統一すること。名言のテーマ（チームワーク・挑戦・成長など）
+を【コミカルに解釈した構図】をゼロから考案し、思わずプッと吹き出して
+しまうようなユーモラスな一場面を描写すること。ただしキャラクターたちの
+表情はあくまで真剣、というギャップが笑いどころになるようにすること。
+画像生成モデルは正確な文字を描画できないため、画像には文字・テキスト・
+ロゴ・サイン等を一切含めないこと。
 """
 
 
@@ -117,10 +141,15 @@ def _build_theme_section(theme: str) -> str:
     )
 
 
-PERSONA_PROMPT_RULES = """# 投稿のルール
-- 名言は実在の人物の発言として広く知られているものを使うこと。発言者名を
-  必ず明記すること（例:「〜」――イチロー）。捏造・出典不明な名言や、
-  発言者を誤って表記することは禁止。
+PERSONA_PROMPT_RULES = """# 投稿のルール（法規・コンプライアンス上、厳格に遵守すること）
+- 名言は、広く知られた実在の公式な発言（書籍・インタビュー・公式記録等で
+  確認できるもの）に限定して使用すること。真偽が不確かなセリフ、都市伝説
+  的な引用、要約による意訳の創作、発言者の記憶に基づく曖昧な引用、
+  そして完全な捏造は厳禁とする。少しでも出典に自信が持てない名言は
+  使わず、別の確実な名言・人物に差し替えること。
+- 発言者名を必ず明記し、名言部分は「」（かぎ括弧）で囲うことで、地の文
+  （解説）と引用が明確に区別できる引用形式にすること（例:「〜」――
+  イチロー）。発言者名の誤記・別人への誤帰属は禁止。
 - 解説部分は説教くささをゼロにし、短く鋭い一言にすること。「わかる」
   「刺さる」「今日から意識したい」と思わせる余韻を残すこと。
 - 絵文字やハッシュタグは使わないこと。
@@ -130,30 +159,42 @@ PERSONA_PROMPT_RULES = """# 投稿のルール
 - 機械的な文字数折り返しは禁止し、必ず「文節（意味のまとまり）」で改行
   すること。単語や複合語の途中で改行してはいけません。
 
-## image_prompt（画像生成プロンプト）のルール
+## image_prompt（画像生成プロンプト）のルール（法規・肖像権・商標対策上、
+厳格に遵守すること）
 - 英語で、gpt-image-1向けに具体的かつ簡潔に記述すること。
-- 名言の世界観・情景を象徴する、洗練されたシネマティックイラストまたは
-  高品質な3Dアートのビジュアルにすること（例: cinematic digital
-  illustration, elegant 3D render, dramatic lighting, sophisticated
-  color grading）。安っぽいクリップアート調やステレオタイプな「成功哲学
-  系」の画像は避けること。
-- 文字・テキスト・ロゴ・サイン・タイポグラフィを一切含めないよう必ず
-  明示すること（例: "no text, no typography, no logos, no signature,
-  no writing of any kind"）。
+- スタイルは「comical, adorable, memorable 3D character illustration」
+  （claymation, cartoonish）に統一すること。これまでのミニマル・抽象的な
+  建築的ビジュアル（architectural blocks等）は使わないこと。
+- 被写体・構図は、その日の名言のテーマ（チームワーク・挑戦・成長など）を
+  【コミカルに解釈】したオリジナルの一場面をゼロから考案すること。例えば
+  チームワークの名言なら「揃っていない衣装のキャラクターたちが、巨大な
+  アヒルを力を合わせて動かそうとして、コミカルに失敗している」といった、
+  思わずプッと吹き出すような構図にすること。ただしキャラクターたちの
+  表情は真剣なままにし、そのギャップをユーモアの核にすること。
+- ライティングは、ドラマチックで温かみのあるスタジオ照明（golden
+  lighting, blue studio lighting等）を基調としつつ、遊び心のある影
+  （playful shadows）を加えること。
+- 名言の発言者本人や、その他いかなる特定の実在人物・有名人の「顔」も
+  描写しないこと（コミカルなオリジナルキャラクターに限る）。
+- 実在する企業・団体のロゴ、商標、ブランドを想起させる意匠・製品デザイン
+  は一切含めないこと。
+- 文字・テキスト・ロゴ・サイン・タイポグラフィを一切含めないこと。
+- プロンプトの末尾には必ず次の一文をそのまま付け加えること（英語表記を
+  変更しないこと）: "no text, no typography, no logos, no signature"
 
 # 参考例（文体・フォーマットのみの参考。実際の内容は必ず本日のテーマに
 沿ったものにすること）
 {
-  "text": "「準備とは、勝つ前から勝っていることだ」――ラグビー元日本代表HC エディー・ジョーンズ\\n明日の会議の結果は、今夜のあなたの机の上に、もう決まっている。",
-  "image_prompt": "A single desk lamp illuminating a neatly organized desk late at night, papers and a notebook laid out with quiet determination, elegant cinematic 3D render, dramatic warm and cool lighting contrast, minimalist and sophisticated mood, no text, no typography, no logos, no signature, no writing of any kind"
+  "text": "「才能で勝つのは試合、チームワークで勝つのは選手権だ」――NBA元名将 フィル・ジャクソン\\n個人の手柄より、隣の椅子を温める人を思い出せる日が、強いチームを作る。",
+  "image_prompt": "A comical, adorable 3D claymation-style illustration of a mismatched team of small round creatures wearing uneven, ill-fitting costumes, comically failing to push a giant plump duck statue together, ropes tangled and one creature toppling backward, yet every character's face is dead serious with focused determination, warm golden lighting mixed with cool blue studio lighting, playful exaggerated shadows, cartoonish charming style, no text, no typography, no logos, no signature"
 }
 {
-  "text": "「失敗とは、より賢く再挑戦するための機会にすぎない」――発明家 トーマス・エジソン\\n今日のミスは経歴の傷ではなく、次の設計図の下書きだ。",
-  "image_prompt": "A cracked lightbulb glowing softly beside a sketchbook full of technical drawings on a wooden workbench, warm golden light, elegant cinematic digital illustration, sense of quiet resilience and craftsmanship, no text, no typography, no logos, no signature, no writing of any kind"
+  "text": "「一番の失敗は、一度も挑戦しないことだ」――発明家 トーマス・エジソン\\n今日の空振りは、明日のスイングを軽くする練習だ。",
+  "image_prompt": "A comical, adorable 3D claymation-style illustration of a tiny round inventor creature triumphantly standing atop a wobbly tower of oversized, comically mismatched gadgets that are clearly about to collapse, sparks and gears flying everywhere in a slapstick mess, yet the creature's face is proud and dead serious, warm golden rim light with cool blue studio fill light, playful exaggerated shadows, cartoonish charming style, no text, no typography, no logos, no signature"
 }
 {
   "text": "「明日死ぬかのように生きよ。永遠に生きるかのように学べ」――ガンジー\\n定時後の30分を、今日の消化ではなく明日への投資に変えてみる。",
-  "image_prompt": "An open book and a cup of tea on a quiet windowsill at dusk, soft cinematic lighting, elegant minimalist 3D render style, contemplative and serene atmosphere, no text, no typography, no logos, no signature, no writing of any kind"
+  "image_prompt": "A comical, adorable 3D claymation-style illustration of a small round creature with an oversized backpack full of books, comically toppling sideways off a tiny stool while reaching for one more book on a precariously tall stack, expression completely serious and focused despite the chaos, warm golden evening lighting with soft cool blue studio accents, playful exaggerated shadows, cartoonish charming style, no text, no typography, no logos, no signature"
 }
 
 # 出力形式
@@ -283,6 +324,7 @@ def generate_draft_texts(client: genai.Client) -> dict:
         image_prompt = str(data["image_prompt"]).strip()
         if not text or not image_prompt:
             raise ValueError(f"Gemini から空の値が返されました: {data!r}")
+        image_prompt = _ensure_image_prompt_safety_suffix(image_prompt)
 
         print(f"[text] モデル '{model}' でテキストを生成しました。")
         return {"text": text, "image_prompt": image_prompt}

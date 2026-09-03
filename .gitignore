@@ -6,7 +6,11 @@ venv/
 
 # Environment / secrets
 .env
+.env.*
+!.env.example
 *.local
+*.pem
+*.key
 
 # OS
 .DS_Store
